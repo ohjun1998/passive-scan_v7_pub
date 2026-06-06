@@ -3,10 +3,49 @@ import os
 import glob
 import requests
 
-def upload_report_via_secure_link():
-    # GitHub Secrets에서 디스코드 주소 수신
-    webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+def get_secure_link(file_path, file_name):
+    """
+    깃허브 공용 IP 차단을 뚫기 위한 3중 보안 링크 발전소 (Failover Chain)
+    """
+    # --- 1차 시도: file.io ---
+    print("[+] Attempting Provider 1: file.io ...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post('https://file.io', files={'file': f}, timeout=15)
+        # 200 OK이면서 내부 내용이 JSON 규격이 맞는지 안전하게 검사
+        if res.status_code == 200 and res.text.strip().startswith('{'):
+            data = res.json()
+            if data.get('success'):
+                return data.get('link'), "1회 다운로드 완료 시 즉시 폭파"
+        print("[-] Provider 1 (file.io) is blocked or rate-limited by Cloudflare. Tossing to Provider 2...")
+    except Exception as e:
+        print(f"[-] Provider 1 Error: {e}")
 
+    # --- 2차 시도: transfer.sh (텍스트 반환 방식이라 차단에 매우 강함) ---
+    print("[+] Attempting Provider 2: transfer.sh ...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.put(f'https://transfer.sh/{file_name}', data=f, timeout=20)
+        if res.status_code == 200 and res.text.strip().startswith('http'):
+            return res.text.strip(), "보관 기한 14일 (무제한 다운로드)"
+        print("[-] Provider 2 (transfer.sh) failed. Tossing to Provider 3...")
+    except Exception as e:
+        print(f"[-] Provider 2 Error: {e}")
+
+    # --- 3차 시도: 0x0.st (개발자 전용 초경량 인프라) ---
+    print("[+] Attempting Provider 3: 0x0.st ...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post('https://0x0.st', files={'file': f}, timeout=20)
+        if res.status_code == 200 and res.text.strip().startswith('http'):
+            return res.text.strip(), "보관 기한 30일 (무제한 다운로드)"
+    except Exception as e:
+        print(f"[-] Provider 3 Error: {e}")
+
+    return None, None
+
+def upload_report_via_secure_link():
+    webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
     if not webhook_url:
         print("[-] Error: DISCORD_WEBHOOK_URL environment variable is missing.")
         return
@@ -17,51 +56,31 @@ def upload_report_via_secure_link():
         print("[-] Error: No excel report found in reports/ folder.")
         return
     
-    # 가장 최근에 생성된 최신 버전 파일 선택
     latest_file = max(files, key=os.path.getmtime)
     file_name = os.path.basename(latest_file)
     file_size = os.path.getsize(latest_file)
 
     print(f"[+] Found latest report: {file_name} ({file_size / 1024 / 1024:.2f} MB)")
-    print(f"[+] Uploading to file.io for secure one-time link generation...")
-
-    # [1단계]: file.io 보안 서버로 파일 업로드 수행 (별도 가입/API Key 필요 없음)
-    try:
-        with open(latest_file, 'rb') as f:
-            # 파일 스트림을 file.io 정문으로 전송
-            io_response = requests.post('https://file.io', files={'file': f})
-        
-        if io_response.status_code == 200:
-            io_data = io_response.json()
-            if io_data.get('success'):
-                secure_link = io_data.get('link')
-                expiry = io_data.get('expiry', '14 days')
-                print(f"[+] Secure link generated successfully: {secure_link}")
-            else:
-                print(f"[-] file.io upload failed: {io_data.get('message')}")
-                return
-        else:
-            print(f"[-] file.io server returned status code: {io_response.status_code}")
-            return
-    except Exception as e:
-        print(f"[-] Exception during file.io upload: {str(e)}")
+    
+    # 3중 우회 엔진 가동하여 안전 링크 확보
+    secure_link, security_policy = get_secure_link(latest_file, file_name)
+    
+    if not secure_link:
+        print("[-] [CRITICAL] All 3 link providers failed due to GitHub Actions IP Ban.")
         return
 
-    # [2단계]: 발급된 일회성 링크를 디스코드 채널로 사출
-    print(f"[+] Transmitting secure link to Private Discord Channel...")
-    
-    # 디스코드 가독성을 높이기 위한 마크다운 템플릿 구성
+    # 디스코드 전송 템플릿 빌드
     discord_message = (
         f"🚀 **[정찰 완료 - 대용량 마스터 보고서]**\n"
         f"📊 파일명: `{file_name}`\n"
         f"⚖️ 파일 크기: `{file_size / 1024 / 1024:.2f} MB`\n\n"
-        f"🔒 **보안 다운로드 링크 (단 1회성):**\n"
+        f"🔒 **보안 다운로드 링크:**\n"
         f"🔗 {secure_link}\n\n"
-        f"⚠️ *주의: 이 링크는 딱 **1번만 다운로드**가 가능하며, 다운로드 직후 서버에서 흔적 없이 영구 삭제됩니다!* (미다운로드 시 {expiry} 후 자동 폭파)"
+        f"💡 *보안 정책: {security_policy}*"
     )
     
-    payload = {'content': discord_message}
-    response = requests.post(webhook_url, data=payload)
+    print(f"[+] Transmitting secure link to Private Discord Channel...")
+    response = requests.post(webhook_url, json={'content': discord_message})
 
     if response.status_code in [200, 204]:
         print("[+] [SUCCESS] Secure link transmitted to Discord successfully!")
