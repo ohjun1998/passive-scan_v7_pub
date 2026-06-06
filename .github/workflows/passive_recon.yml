@@ -54,7 +54,7 @@ jobs:
     - name: Run Matrix Parallel Scan
       run: ./scan_${{ matrix.tool }}.sh ${{ matrix.group }}
 
-    # [★암호화 터널 핵심★]:results/ 폴더 내 데이터를 묶어 AES-256 자물쇠를 채움 (소음/지연 차단)
+    # [★암호화 터널 핵심★]: results/ 폴더 내 데이터를 묶어 AES-256 자물쇠를 채움
     - name: Encrypt Results
       run: |
         mkdir -p encrypted_data
@@ -64,7 +64,7 @@ jobs:
     - name: Upload Encrypted Matrix Results
       uses: actions/upload-artifact@v4
       with:
-        name: results-${{ matrix.tool }}-${{ matrix.group }}
+        name: results-${{ matrix.tool }}--${{ matrix.group }}
         path: encrypted_data/results_${{ matrix.tool }}_${{ matrix.group }}.tar.gz.gpg
         retention-days: 1
 
@@ -109,10 +109,11 @@ jobs:
     - name: Build Intelligent Excel Report
       run: python txt_to_excel.py
 
-    # [보안 사출 핵심]: 구글 드라이브 로봇 인증서 복원 및 파이썬 업로드 스크립트 가동
+    # [보안 사출 고도화]: 구글 JSON 인증서 깨짐 방지를 위해 env 매핑 후 파일 생성하도록 수정 완료
     - name: Upload Final Excel Report to Google Drive
-      run: |
-        echo "${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}" > service_account.json
-        python upload_to_gdrive.py
       env:
+        GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
         GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      run: |
+        echo "$GDRIVE_SERVICE_ACCOUNT_JSON" > service_account.json
+        python upload_to_gdrive.py
