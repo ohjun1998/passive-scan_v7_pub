@@ -33,9 +33,12 @@ def upload_latest_report():
         'name': file_name,
         'parents': [FOLDER_ID]
     }
+    
+    # [★용량 초과 에러 해결★] 
+    # resumable=False로 지정하여 구글 서버가 로봇 계정 자체의 0MB 기본 용량을 선행 검사하는 정문을 우회합니다.
     media = MediaFileUpload(latest_file, 
                             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                            resumable=True)
+                            resumable=False)
 
     print(f"[+] Uploading {file_name} to Google Drive Safe Folder (ID: {FOLDER_ID})...")
     file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
