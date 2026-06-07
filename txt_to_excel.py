@@ -28,7 +28,7 @@ def build_advanced_excel_report():
     
     for file_path in txt_files:
         filename = os.path.basename(file_path).lower()
-        if 'secretfinder' in filename: source_tool = 'SecretFinder'
+        if 'linkfinder' in filename: source_tool = 'LinkFinder'
         elif 'trufflehog' in filename: source_tool = 'TruffleHog'
         elif 'waybackurls' in filename: source_tool = 'Waybackurls'
         elif 'gau' in filename: source_tool = 'GAU'
@@ -59,7 +59,7 @@ def build_advanced_excel_report():
     # Dashboard 시트 세팅
     ws_dash = wb.active
     ws_dash.title = "Dashboard"
-    dash_headers = ["No", "Target Domain (대상 도메인)", "Total URLs (총 URL 합계)", "Secret Criticals (시크릿 탐지 건수)"]
+    dash_headers = ["No", "Target Domain (대상 도메인)", "Total URLs (총 URL 합계)", "Verified Secrets (TruffleHog 검증 건수)"]
     ws_dash.append(dash_headers)
     ws_dash.row_dimensions[1].height = 26
     for col_num in range(1, 5):
@@ -89,8 +89,9 @@ def build_advanced_excel_report():
         if not url_map: continue
         
         total_urls = len(url_map)
-        secret_criticals = sum(1 for url, tools in url_map.items() if 'SecretFinder' in tools or 'TruffleHog' in tools)
-        ws_dash.append([dash_idx, domain, total_urls, secret_criticals])
+        # 이제 가장 중요한 TruffleHog 핵심 자격증명 탐지 건수만 대시보드 위험 지표로 누적합니다.
+        verified_secrets_count = sum(1 for url, tools in url_map.items() if 'TruffleHog' in tools)
+        ws_dash.append([dash_idx, domain, total_urls, verified_secrets_count])
         dash_idx += 1
 
         safe_tab_name = domain[:30]
@@ -114,13 +115,12 @@ def build_advanced_excel_report():
 
             is_high_risk = False
             reason = ""
+            # TruffleHog가 찾은 자산이 1순위 High Risk 자산이 됩니다.
             if 'TruffleHog' in tools:
                 is_high_risk = True
                 reason = "TruffleHog 실시간 유효성 검증 완료된 핵심 API Key 유출"
-            elif 'SecretFinder' in tools:
-                is_high_risk = True
-                reason = "SecretFinder 소스코드 내 보안 자격증명 노출 의심"
             else:
+                # LinkFinder나 타 도구가 찾은 경로 중 민감 키워드가 섞인 엔드포인트를 2순위 정밀 분류합니다.
                 url_lower = url.lower()
                 matched_keys = [key for key in high_risk_keywords if key in url_lower]
                 if matched_keys:
