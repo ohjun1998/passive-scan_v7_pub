@@ -17,7 +17,7 @@ scan_truffle() {
         local download_dir="results/${domain}_js_files"
         mkdir -p "$download_dir"
         
-        # [핵심 보완]: 상대 경로거나 http가 빠진 주소들을 완벽한 https:// URL로 정제 및 강제 복원
+        # 상대 경로거나 http가 빠진 주소들을 완벽한 https:// URL로 정제 및 강제 복원
         head -n 50 "$master_list" | while read -r url; do
             if [[ "$url" =~ ^https?:// ]]; then
                 echo "$url"
@@ -34,10 +34,10 @@ scan_truffle() {
         if [ -s "results/${domain}_js_urls_clean.txt" ]; then
             echo "[+] [$domain] Downloading targeted JS assets safely..."
             
-            # 2>/dev/null을 제거하여 만약 에러가 나면 GitHub 로그에 찍히도록 수정
+            # 에러를 유발하던 --copies=1 옵션을 완벽히 제거했습니다.
             wget -P "$download_dir" \
                  -i "results/${domain}_js_urls_clean.txt" \
-                 --copies=1 --tries=1 \
+                 --tries=1 \
                  --timeout=5 \
                  --wait=1 \
                  --random-wait \
