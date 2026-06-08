@@ -19,7 +19,7 @@ collect_master() {
     sort -u "results/${domain}_waybackurls.txt" -o "results/${domain}_waybackurls.txt"
 
     # 2. 순수 .js 목록 추출 및 마스터 주소록 생성
-    cat "results/${domain}_gau.txt" "results/${domain}_waybackurls.txt" 2>/dev/null | grep -E '\.js($|\?)' 2>/dev/null | sort -u > "results/${domain}_js_master_list.txt"
+    cat "results/${domain}_gau.txt" "results/${domain}_waybackurls.txt" 2>/dev/null | grep -E '\.js($|\\?)' 2>/dev/null | sort -u > "results/${domain}_js_master_list.txt"
     
     local total_js=$(wc -l < "results/${domain}_js_master_list.txt")
     echo "  -> [$domain] Successfully indexed $total_js unique JS targets."
@@ -33,7 +33,7 @@ collect_master() {
         rm -f "results/${domain}_js_mapping.txt"
 
         # 주소 형태 강제 복원 및 정제 (최대 500개 라인 추출)
-        head -n 1500 "results/${domain}_js_master_list.txt" | while read -r url; do
+        head -n 500 "results/${domain}_js_master_list.txt" | while read -r url; do
             if [[ "$url" =~ ^https?:// ]]; then echo "$url"
             elif [[ "$url" =~ ^// ]]; then echo "https:$url"
             elif [[ "$url" =~ ^/ ]]; then echo "https://$domain$url"
@@ -41,12 +41,10 @@ collect_master() {
             fi
         done > "results/${domain}_js_urls_clean.txt"
 
-        # [WAF 차단 우회 및 원본 주소 매핑 테이블 빌드]
+        # [원본 주소 매핑 테이블 빌드]
         while read -r url; do
             [[ -z "$url" ]] && continue
             local safe_name=$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-150).js
-            
-            # 💡 파일명과 원본 URL 주소 매핑을 탭(\t)으로 엮어 사출 데이터 백업에 보존
             echo -e "${safe_name}\t${url}" >> "results/${domain}_js_mapping.txt"
         done < "results/${domain}_js_urls_clean.txt"
 
@@ -54,19 +52,29 @@ collect_master() {
         shuf "results/${domain}_js_urls_clean.txt" -o "results/${domain}_js_urls_shuffled.txt"
         
         echo "[+] [$domain] Downloading targeting JS assets safely with delays..."
+        # 실시간 다운로드 스태츠 카운터 초기화
+        local success_cnt=0
+        local fail_cnt=0
+
         while read -r url; do
             [[ -z "$url" ]] && continue
             local safe_name=$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-150).js
             
-            # 브라우저 위장 및 패킷 지연 수집
-            curl -s -L --max-time 15 \
+            # 💡 [요구사항 반영] --fail 옵션을 추가하여 curl이 HTTP 에러 반환 시 실패(non-zero)로 감지하도록 제어
+            if curl -s -L --max-time 15 --fail \
                  -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-                 "$url" -o "$download_dir/$safe_name" || true
+                 "$url" -o "$download_dir/$safe_name"; then
+                echo "    [✓] Success: $url"
+                ((success_cnt++))
+            else
+                echo "    [✗] Failed: $url"
+                ((fail_cnt++))
+            fi
             sleep 0.5
         done < "results/${domain}_js_urls_shuffled.txt"
 
         rm -f "results/${domain}_js_urls_clean.txt" "results/${domain}_js_urls_shuffled.txt"
-        echo "  -> [$domain] Done. Pre-downloaded $(ls "$download_dir" | wc -l) files for analysis stages."
+        echo "  -> [$domain] Batch completed. (Successfully Downloaded: ${success_cnt} / Failed: ${fail_cnt})"
     fi
 }
 
