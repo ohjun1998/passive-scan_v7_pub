@@ -24,12 +24,12 @@ collect_master() {
     local total_js=$(wc -l < "results/${domain}_js_master_list.txt")
     echo "  -> [$domain] Successfully indexed $total_js unique JS targets."
 
-    # 3. [최적화 핵심] 타겟 서버 차단 방지를 위한 선행 다운로드 (최대 100개 제한으로 복원)
+    # 3. [최적화 핵심] 타겟 서버 차단 방지를 위한 선행 다운로드 (최대 500개 제한으로 확장)
     if [ "$total_js" -gt 0 ]; then
         local download_dir="results/${domain}_js_files"
         mkdir -p "$download_dir"
 
-        # 주소 형태 강제 복원 및 정제 (최대 100개 라인 추출)
+        # 주소 형태 강제 복원 및 정제 (최대 500개 라인 추출)
         head -n 500 "results/${domain}_js_master_list.txt" | while read -r url; do
             if [[ "$url" =~ ^https?:// ]]; then echo "$url"
             elif [[ "$url" =~ ^// ]]; then echo "https:$url"
