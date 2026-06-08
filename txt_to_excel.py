@@ -14,7 +14,7 @@ def build_advanced_excel_report():
     with open('targets.txt', 'r') as f:
         targets = [line.strip() for line in f if line.strip()]
 
-    # 다차원 데이터 매트릭스 선언 (tools 세트와 files 세트를 독립 추적)
+    # 다차원 데이터 매트릭스 선언
     matrix_data = {domain: {} for domain in targets}
     txt_files = glob.glob('results/**/*.*', recursive=True) + glob.glob('results/*.*')
     txt_files = [f for f in txt_files if os.path.isfile(f)]
@@ -41,7 +41,7 @@ def build_advanced_excel_report():
                     line_str = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', line_str)
                     if not line_str: continue
                     
-                    # [기능 추가 핵심] 탭(\t) 구분자가 존재할 경우 원본 실물 파일명 분리 추출
+                    # 탭(\t) 구분자가 존재할 경우 원본 실물 파일명 분리 추출
                     js_file = "Passive Archive"
                     if '\t' in line_str:
                         parts = line_str.split('\t', 1)
@@ -99,7 +99,7 @@ def build_advanced_excel_report():
         cell.border = thin_border
 
     # ==========================================
-    # 4. High Risk Targets 시트 설계 (Found in JS File 컬럼 추가)
+    # 4. High Risk Targets 시트 설계
     # ==========================================
     ws_high = wb.create_sheet(title="High Risk Targets")
     high_headers = ["No", "Source Tool", "Found in JS File", "Domain", "High Risk URL / Endpoint", "Risk Reason"] 
@@ -151,7 +151,7 @@ def build_advanced_excel_report():
 
         if not url_map: continue
 
-        # 개별 도메인 탭 추가 및 정밀 내역 수립 (Found in JS File 컬럼 추가)
+        # 개별 도메인 탭 추가
         ws = wb.create_sheet(title=domain[:30])
         sheets_created += 1
         ws.append(["No", "Source Tool", "Found in JS File", "Target URL / Endpoint"]) 
@@ -225,21 +225,36 @@ def build_advanced_excel_report():
                 cell.number_format = '#,##0'
 
     # ==========================================
-    # 6. 전 시트 자동 열 너비(Width) 맞춤 최적화 알고리즘
+    # 6. 전 시트 자동 열 너비 맞춤 및 상한선 상한 제어 알고리즘
     # ==========================================
     for sheet in wb.worksheets:
-        for col in sheet.columns:
+        headers = [cell.value for cell in sheet[1]]
+        
+        for col_idx, col in enumerate(sheet.columns, 1):
             max_len = 0
-            col_letter = get_column_letter(col[0].column)
+            col_letter = get_column_letter(col_idx)
+            header_value = headers[col_idx - 1] if col_idx <= len(headers) else None
+            
             for cell in col:
                 if cell.value:
                     val_str = str(cell.value)
                     if not val_str.startswith('='):
                         cell_len = sum(2 if ord(char) > 128 else 1 for char in val_str)
                         if cell_len > max_len: max_len = cell_len
-            sheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
+            
+            calculated_width = max(max_len + 4, 12)
+            
+            # [요구사항 반영] 너무 길어지던 핵심 텍스트 컬럼의 가로폭 제한 락(Lock) 다운 조정
+            if header_value in ["High Risk URL / Endpoint", "Target URL / Endpoint"]:
+                sheet.column_dimensions[col_letter].width = 45  # 60에서 45로 줄여 가로 스크롤 방지
+            elif header_value == "Found in JS File":
+                sheet.column_dimensions[col_letter].width = 20  # 30에서 20으로 조절하여 깔끔하게 세팅
+            elif header_value == "Risk Reason":
+                sheet.column_dimensions[col_letter].width = 40  
+            else:
+                sheet.column_dimensions[col_letter].width = calculated_width
 
-    # 지정 수치 보정 고정폭 세팅
+    # 대시보드 고정폭 셋업
     ws_dash.column_dimensions['A'].width = 10
     ws_dash.column_dimensions['B'].width = 35
     ws_dash.column_dimensions['C'].width = 26
