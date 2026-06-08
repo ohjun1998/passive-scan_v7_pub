@@ -29,11 +29,11 @@ collect_master() {
         local download_dir="results/${domain}_js_files"
         mkdir -p "$download_dir"
         
-        # [원래 모양 복원 핵심] 매핑 기록 파일 초기화
+        # 매핑 기록 파일 초기화
         rm -f "results/${domain}_js_mapping.txt"
 
         # 주소 형태 강제 복원 및 정제 (최대 500개 라인 추출)
-        head -n 500 "results/${domain}_js_master_list.txt" | while read -r url; do
+        head -n 1500 "results/${domain}_js_master_list.txt" | while read -r url; do
             if [[ "$url" =~ ^https?:// ]]; then echo "$url"
             elif [[ "$url" =~ ^// ]]; then echo "https:$url"
             elif [[ "$url" =~ ^/ ]]; then echo "https://$domain$url"
@@ -51,8 +51,7 @@ collect_master() {
         # 도메인 내부 요청을 무작위로 섞음
         shuf "results/${domain}_js_urls_clean.txt" -o "results/${domain}_js_urls_shuffled.txt"
         
-        echo "[+] [$domain] Downloading targeting JS assets safely with delays..."
-        # 실시간 다운로드 스태츠 카운터 초기화
+        echo -n "[+] [$domain] Downloading targeting JS assets: "
         local success_cnt=0
         local fail_cnt=0
 
@@ -60,18 +59,19 @@ collect_master() {
             [[ -z "$url" ]] && continue
             local safe_name=$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-150).js
             
-            # 💡 [요구사항 반영] --fail 옵션을 추가하여 curl이 HTTP 에러 반환 시 실패(non-zero)로 감지하도록 제어
+            # 💡 [보안 강화] 외부인이 타겟 URL 주소를 보지 못하도록 콘솔에는 주소를 빼고 기호만 출력합니다.
             if curl -s -L --max-time 15 --fail \
                  -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
                  "$url" -o "$download_dir/$safe_name"; then
-                echo "    [✓] Success: $url"
+                echo -n "."  # 성공 시 점(.) 표기
                 ((success_cnt++))
             else
-                echo "    [✗] Failed: $url"
+                echo -n "x"  # 실패 시 x 표기
                 ((fail_cnt++))
             fi
             sleep 0.5
         done < "results/${domain}_js_urls_shuffled.txt"
+        echo "" # 줄바꿈
 
         rm -f "results/${domain}_js_urls_clean.txt" "results/${domain}_js_urls_shuffled.txt"
         echo "  -> [$domain] Batch completed. (Successfully Downloaded: ${success_cnt} / Failed: ${fail_cnt})"
