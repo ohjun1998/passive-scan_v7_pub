@@ -33,7 +33,7 @@ collect_master() {
         rm -f "results/${domain}_js_mapping.txt"
 
         # 주소 형태 강제 복원 및 정제 (최대 4000개 라인 추출)
-        head -n 4000 "results/${domain}_js_master_list.txt" | while read -r url; do
+        head -n 8000 "results/${domain}_js_master_list.txt" | while read -r url; do
             if [[ "$url" =~ ^https?:// ]]; then echo "$url"
             elif [[ "$url" =~ ^// ]]; then echo "https:$url"
             elif [[ "$url" =~ ^/ ]]; then echo "https://$domain$url"
