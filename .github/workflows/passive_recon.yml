@@ -1,4 +1,4 @@
-name: Automated Parallel Passive Reconnaissance (Enterprise Staged Engine)
+name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,10 @@ permissions:
   contents: write
 
 jobs:
-  collect-urls:
+  # ==========================================
+  # [Job 1] 20대 노드 풀가동 (논스톱 수집 및 오프라인 분석)
+  # ==========================================
+  recon-node:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -17,149 +20,175 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Create Targets File from Secret
+    - name: Create Targets File
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
     - name: Set up Go
-      with:
-        go-version: 'stable'
       uses: actions/setup-go@v5
+      with: { go-version: 'stable' }
 
-    - name: Install Collection Tools
+    - name: Install All Core Tools
       run: |
         go install github.com/lc/gau/v2/cmd/gau@latest
         go install github.com/tomnomnom/waybackurls@latest
+        go install github.com/BishopFox/jsluice/cmd/jsluice@latest
+        sudo apt-get install jq -y
+        curl -sSfL --retry 5 --retry-delay 5 "https://github.com/trufflesecurity/trufflehog/releases/download/v3.82.0/trufflehog_3.82.0_linux_amd64.tar.gz" -o trufflehog.tar.gz
+        tar -xzf trufflehog.tar.gz trufflehog 2>/dev/null || tar -xzf trufflehog.tar.gz
+        sudo mv trufflehog /usr/local/bin/
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
-    - name: Run Stage 1 Passive Collector & Safe Downloader
+    - name: Run Phase 1 & 2 Non-Stop
       run: |
-        chmod +x collect_urls.sh
+        chmod +x *.sh
         ./collect_urls.sh ${{ matrix.group }}
+        ./scan_linkfinder.sh ${{ matrix.group }}
+        ./scan_trufflehog.sh ${{ matrix.group }}
 
-    - name: Encrypt Stage 1 Package
-      run: |
-        mkdir -p encrypted_stage1
-        tar -czf - -C results/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_stage1/urls_${{ matrix.group }}.tar.gz.gpg
-
-    - name: Upload Stage 1 Intermediary Data
-      uses: actions/upload-artifact@v4
-      with:
-        name: urls-package-${{ matrix.group }}
-        path: encrypted_stage1/urls_${{ matrix.group }}.tar.gz.gpg
-        retention-days: 1
-
-  analyze-js:
-    runs-on: ubuntu-latest
-    needs: collect-urls
-    strategy:
-      matrix:
-        group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
-        tool: [linkfinder, trufflehog]
-      fail-fast: false
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-
-    - name: Create Targets File from Secret
-      run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
-
-    - name: Set up Go
-      with:
-        go-version: 'stable'
-      uses: actions/setup-go@v5
-
-    - name: Install Assigned Analysis Tool Only
-      run: |
-        if [ "${{ matrix.tool }}" = "linkfinder" ]; then
-          go install github.com/BishopFox/jsluice/cmd/jsluice@latest
-          sudo apt-get install jq -y
-        elif [ "${{ matrix.tool }}" = "trufflehog" ]; then
-          TRUFFLEHOG_VER="3.82.0"
-          curl -sSfL --retry 5 --retry-delay 5 "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VER}/trufflehog_${TRUFFLEHOG_VER}_linux_amd64.tar.gz" -o trufflehog.tar.gz
-          tar -xzf trufflehog.tar.gz trufflehog 2>/dev/null || tar -xzf trufflehog.tar.gz
-          sudo mv trufflehog /usr/local/bin/
-          rm -f trufflehog.tar.gz
-        fi
-        echo "$HOME/go/bin" >> $GITHUB_PATH
-
-    - name: Download Stage 1 Package
-      uses: actions/download-artifact@v4
-      with:
-        name: urls-package-${{ matrix.group }}
-        path: encrypted_storage
-
-    - name: Decrypt Stage 1 Intermediary Data
-      run: |
-        mkdir -p results
-        gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" encrypted_storage/urls_${{ matrix.group }}.tar.gz.gpg 2>/dev/null | tar -xzf - -C results/
-
-    - name: Run Stage 2 Precision Scan
-      run: |
-        chmod +x scan_${{ matrix.tool }}.sh
-        ./scan_${{ matrix.tool }}.sh ${{ matrix.group }}
-
-    - name: Encrypt Stage 2 Final Package
+    - name: Encrypt Final Node Data
       run: |
         mkdir -p encrypted_final
-        tar -czf - -C results/ --exclude='*_js_files' . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_final/analysis_${{ matrix.tool }}_${{ matrix.group }}.tar.gz.gpg
+        tar -czf - -C results/ --exclude='*_js_files' . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_final/node_results_${{ matrix.group }}.tar.gz.gpg
 
-    - name: Upload Encrypted Matrix Results
+    - name: Upload Node Data
       uses: actions/upload-artifact@v4
       with:
-        name: results-${{ matrix.tool }}--${{ matrix.group }}
-        path: encrypted_final/analysis_${{ matrix.tool }}_${{ matrix.group }}.tar.gz.gpg
+        name: node-results-${{ matrix.group }}
+        path: encrypted_final/node_results_${{ matrix.group }}.tar.gz.gpg
         retention-days: 1
 
-  excel-reporter:
+  # ==========================================
+  # [Job 2] 글로벌 믹서기 (단 1대) - 섞고 20등분 분배
+  # ==========================================
+  global-mixer:
     runs-on: ubuntu-latest
-    needs: analyze-js
+    needs: recon-node
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Set up Python & Go
+    - name: Set up Python
       uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      with: { python-version: '3.10' }
 
-    - name: Set up Go
-      with:
-        go-version: 'stable'
-      uses: actions/setup-go@v5
-
-    - name: Install Dependencies & Httpx
-      run: |
-        pip install openpyxl requests
-        go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-        echo "$HOME/go/bin" >> $GITHUB_PATH
-
-    - name: Create Targets File from Secret
+    - name: Create Targets File
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
-    - name: Download All Encrypted Results
+    - name: Download All Node Results
       uses: actions/download-artifact@v4
       with:
         path: encrypted_storage
         merge-multiple: true
 
-    - name: Decrypt and Restore Results
+    - name: Decrypt Node Results
       run: |
         mkdir -p results
         for f in encrypted_storage/*.gpg; do
-          if [ -f "$f" ]; then
-            gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
-          fi
+          gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: Build Intelligent Excel Report (with httpx Stealth Engine)
-      run: python -u txt_to_excel.py
+    - name: Run Global Mixer Engine
+      run: python global_mixer.py
 
-    - name: Store Final Excel Report in GitHub Artifacts
+    - name: Encrypt Chunks for Httpx
+      run: |
+        mkdir -p encrypted_chunks
+        tar -czf - -C chunks/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_chunks/global_chunks.tar.gz.gpg
+
+    - name: Upload Mixed Chunks
       uses: actions/upload-artifact@v4
       with:
-        name: passive-recon-master-report
-        path: reports/passive_recon_report_v1.xlsx
-        retention-days: 14
+        name: global-chunks
+        path: encrypted_chunks/global_chunks.tar.gz.gpg
+        retention-days: 1
+
+  # ==========================================
+  # [Job 3] Httpx 스텔스 타격대 (20대 풀가동)
+  # ==========================================
+  httpx-strike:
+    runs-on: ubuntu-latest
+    needs: global-mixer
+    strategy:
+      matrix:
+        group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
+      fail-fast: false
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go & Install Httpx
+      run: |
+        wget https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
+        sudo tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
+        export PATH=$PATH:/usr/local/go/bin
+        go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+        echo "$HOME/go/bin" >> $GITHUB_PATH
+
+    - name: Download & Decrypt Mixed Chunks
+      uses: actions/download-artifact@v4
+      with:
+        name: global-chunks
+        path: temp_chunks
+    - run: |
+        mkdir -p chunks
+        gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" temp_chunks/global_chunks.tar.gz.gpg 2>/dev/null | tar -xzf - -C chunks/
+
+    - name: Execute Httpx Strike (20 RPS per Node)
+      run: |
+        mkdir -p httpx_out
+        if [ -s chunks/chunk_${{ matrix.group }}.txt ]; then
+          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 20 -c 10 -timeout 4 -retries 1 -json -o httpx_out/httpx_results_${{ matrix.group }}.json -silent
+        else
+          touch httpx_out/httpx_results_${{ matrix.group }}.json
+        fi
+
+    - name: Encrypt Httpx Results
+      run: |
+        mkdir -p encrypted_httpx
+        tar -czf - -C httpx_out/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_httpx/httpx_results_${{ matrix.group }}.tar.gz.gpg
+
+    - name: Upload Httpx Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: httpx-results-${{ matrix.group }}
+        path: encrypted_httpx/httpx_results_${{ matrix.group }}.tar.gz.gpg
+        retention-days: 1
+
+  # ==========================================
+  # [Job 4] 엑셀 사출 (단 1대)
+  # ==========================================
+  excel-reporter:
+    runs-on: ubuntu-latest
+    needs: [recon-node, httpx-strike]
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with: { python-version: '3.10' }
+
+    - name: Install Dependencies
+      run: pip install openpyxl requests
+
+    - name: Create Targets File
+      run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
+
+    - name: Download ALL Results (Nodes + Httpx)
+      uses: actions/download-artifact@v4
+      with:
+        path: encrypted_storage
+        merge-multiple: true
+
+    - name: Decrypt and Map Data
+      run: |
+        mkdir -p results
+        for f in encrypted_storage/*.gpg; do
+          gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
+        done
+
+    - name: Build Intelligent Excel Report
+      run: python -u txt_to_excel.py
 
     - name: Alert Discord
       env:
