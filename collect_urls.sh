@@ -24,15 +24,15 @@ collect_master() {
     local total_js=$(wc -l < "results/${domain}_js_master_list.txt")
     echo "  -> [$domain] Successfully indexed $total_js unique strict JS targets."
 
-    # [최적화 핵심] 타겟 서버 차단 방지를 위한 선행 다운로드 (최대 4000개 제한 보존)
+    # 💡 [다운로드 제한 최적화] 타겟 서버 차단 방지를 위한 선행 다운로드 한계를 1000개로 조정
     if [ "$total_js" -gt 0 ]; then
         local download_dir="results/${domain}_js_files"
         mkdir -p "$download_dir"
         
         rm -f "results/${domain}_js_mapping.txt"
 
-        # 주소 형태 강제 복원 및 정제 (최대 4000개 라인 추출)
-        head -n 4000 "results/${domain}_js_master_list.txt" | while read -r url; do
+        # 주소 형태 강제 복원 및 정제 (💡 최대 1000개 라인 추출로 제어)
+        head -n 1000 "results/${domain}_js_master_list.txt" | while read -r url; do
             if [[ "$url" =~ ^https?:// ]]; then echo "$url"
             elif [[ "$url" =~ ^// ]]; then echo "https:$url"
             elif [[ "$url" =~ ^/ ]]; then echo "https://$domain$url"
@@ -73,7 +73,7 @@ collect_master() {
                 ((fail_cnt++))
             fi
             
-            # 💡 [속도 상향 적용 핵심] 요청 간 휴식기를 0.5초에서 0.2초로 단축하여 초당 최대 5회 고속 다운로드 구현
+            # 요청 간 휴식기 0.2초 스텔스 고속 설정 유지
             sleep 0.2
         done < "results/${domain}_js_urls_shuffled.txt"
 
