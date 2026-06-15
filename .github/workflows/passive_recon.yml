@@ -17,17 +17,17 @@ jobs:
         group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
       fail-fast: false
     steps:
-    - name: Checkout Repository
+    - name: 저장소 체크아웃
       uses: actions/checkout@v4
 
-    - name: Create Targets File
+    - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
-    - name: Set up Go
+    - name: Go 언어 환경 세팅
       uses: actions/setup-go@v5
       with: { go-version: 'stable' }
 
-    - name: Install All Core Tools
+    - name: 핵심 정찰 도구 설치 (gau, waybackurls, jsluice, trufflehog)
       run: |
         go install github.com/lc/gau/v2/cmd/gau@latest
         go install github.com/tomnomnom/waybackurls@latest
@@ -38,19 +38,19 @@ jobs:
         sudo mv trufflehog /usr/local/bin/
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
-    - name: Run Phase 1 & 2 Non-Stop
+    - name: Phase 1 & 2 논스톱 실행 (수집 ➡️ 다운로드 ➡️ 오프라인 파싱)
       run: |
         chmod +x *.sh
         ./collect_urls.sh ${{ matrix.group }}
         ./scan_linkfinder.sh ${{ matrix.group }}
         ./scan_trufflehog.sh ${{ matrix.group }}
 
-    - name: Encrypt Final Node Data
+    - name: 파편 데이터 암호화 (JS 원본 제외)
       run: |
         mkdir -p encrypted_final
         tar -czf - -C results/ --exclude='*_js_files' . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_final/node_results_${{ matrix.group }}.tar.gz.gpg
 
-    - name: Upload Node Data
+    - name: 아티팩트 업로드 (다음 단계로 전달)
       uses: actions/upload-artifact@v4
       with:
         name: node-results-${{ matrix.group }}
@@ -58,44 +58,44 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 2] 글로벌 믹서기 (단 1대) - 섞고 20등분 분배
+  # [Job 2] 글로벌 믹서기 (단 1대) - 타겟 병합, 중복제거, 셔플
   # ==========================================
   global-mixer:
     runs-on: ubuntu-latest
     needs: recon-node
     steps:
-    - name: Checkout Repository
+    - name: 저장소 체크아웃
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Python 환경 세팅
       uses: actions/setup-python@v5
       with: { python-version: '3.10' }
 
-    - name: Create Targets File
+    - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
-    - name: Download All Node Results
+    - name: 20대 가상머신의 파편 데이터 전부 다운로드
       uses: actions/download-artifact@v4
       with:
         path: encrypted_storage
         merge-multiple: true
 
-    - name: Decrypt Node Results
+    - name: 파편 데이터 복호화 및 압축 해제
       run: |
         mkdir -p results
         for f in encrypted_storage/*.gpg; do
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: Run Global Mixer Engine
+    - name: 글로벌 셔플 엔진 가동 (중복 제거 및 서브도메인 판별 통합)
       run: python global_mixer.py
 
-    - name: Encrypt Chunks for Httpx
+    - name: Httpx 타격 노드들을 위한 20분할 탄창 암호화
       run: |
         mkdir -p encrypted_chunks
         tar -czf - -C chunks/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_chunks/global_chunks.tar.gz.gpg
 
-    - name: Upload Mixed Chunks
+    - name: 분할 탄창 업로드
       uses: actions/upload-artifact@v4
       with:
         name: global-chunks
@@ -103,7 +103,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 3] Httpx 타격대 - 다이내믹 스텔스 오토 스케일링 탑재 
+  # [Job 3] Httpx 스텔스 타격대 (20대 풀가동)
   # ==========================================
   httpx-strike:
     runs-on: ubuntu-latest
@@ -113,10 +113,10 @@ jobs:
         group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
       fail-fast: false
     steps:
-    - name: Checkout Repository
+    - name: 저장소 체크아웃
       uses: actions/checkout@v4
 
-    - name: Set up Go & Install Httpx
+    - name: Go 환경 및 최신 Httpx 설치
       run: |
         wget https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
         sudo tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
@@ -124,16 +124,18 @@ jobs:
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
-    - name: Download & Decrypt Mixed Chunks
+    - name: 암호화된 분할 탄창 다운로드
       uses: actions/download-artifact@v4
       with:
         name: global-chunks
         path: temp_chunks
-    - run: |
+        
+    - name: 분할 탄창 복호화
+      run: |
         mkdir -p chunks
         gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" temp_chunks/global_chunks.tar.gz.gpg 2>/dev/null | tar -xzf - -C chunks/
 
-    - name: Execute Httpx Strike (With Dynamic Stealth Engine)
+    - name: 다이내믹 스텔스 Httpx 타격 개시
       run: |
         mkdir -p httpx_out
         if [ -s chunks/chunk_${{ matrix.group }}.txt ]; then
@@ -141,19 +143,24 @@ jobs:
           GLOBAL_EST=$((TOTAL * 20))
           
           if [ "$GLOBAL_EST" -ge 100000 ]; then
-            RL=30; THREADS=15; GEAR="Max Throttle (Ultra Safe)"
+            RL=30; THREADS=15; GEAR="초고속 분산 모드 (스텔스 유지)"
           elif [ "$GLOBAL_EST" -ge 20000 ]; then
-            RL=20; THREADS=10; GEAR="High Speed (Safe)"
+            RL=20; THREADS=10; GEAR="고속 스텔스 모드"
           elif [ "$GLOBAL_EST" -ge 5000 ]; then
-            RL=10; THREADS=5; GEAR="Medium Stealth"
+            RL=10; THREADS=5; GEAR="중형 스텔스 모드"
           elif [ "$GLOBAL_EST" -ge 1000 ]; then
-            RL=5; THREADS=2; GEAR="High Precision Stealth"
+            RL=5; THREADS=2; GEAR="정밀 스텔스 모드"
           else
-            RL=2; THREADS=1; GEAR="Extreme Stealth"
+            RL=2; THREADS=1; GEAR="극한 스텔스 모드 (타겟 밀집 방어)"
           fi
           
-          echo "[*] Node ${{ matrix.group }} - Estimated Global Target Pool: $GLOBAL_EST URLs"
-          echo "[*] Shifting to [$GEAR] -> Engine Speed: $RL RPS / $THREADS Threads"
+          echo "========================================================="
+          echo "🤖 노드 [${{ matrix.group }}] 타격 장전 완료"
+          echo "📊 예상 전체 URL 개수: 약 $GLOBAL_EST 개"
+          echo "🚀 [스텔스 자동 변속기] '$GEAR' 적용됨!"
+          echo "⚡ 노드 당 타격 속도: 초당 $RL 개 검사 (스레드 $THREADS 개)"
+          echo "========================================================="
+          echo "[+] 상태 코드 추출을 시작합니다. (정적 파일은 생략됩니다)"
           
           httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl $RL -t $THREADS -timeout 4 -retries 1 -json -silent \
           | tee httpx_out/httpx_results_${{ matrix.group }}.json \
@@ -163,12 +170,12 @@ jobs:
           touch httpx_out/httpx_results_${{ matrix.group }}.json
         fi
 
-    - name: Encrypt Httpx Results
+    - name: Httpx 타격 결과 암호화
       run: |
         mkdir -p encrypted_httpx
         tar -czf - -C httpx_out/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_httpx/httpx_results_${{ matrix.group }}.tar.gz.gpg
 
-    - name: Upload Httpx Results
+    - name: Httpx 타격 결과 업로드
       uses: actions/upload-artifact@v4
       with:
         name: httpx-results-${{ matrix.group }}
@@ -182,44 +189,43 @@ jobs:
     runs-on: ubuntu-latest
     needs: [recon-node, httpx-strike]
     steps:
-    - name: Checkout Repository
+    - name: 저장소 체크아웃
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Python 환경 세팅
       uses: actions/setup-python@v5
       with: { python-version: '3.10' }
 
-    - name: Install Dependencies
+    - name: Python 라이브러리 설치
       run: pip install openpyxl requests
 
-    - name: Create Targets File
+    - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
-    - name: Download ALL Results (Nodes + Httpx)
+    - name: 모든 암호화된 결과물 취합 (파편 + Httpx)
       uses: actions/download-artifact@v4
       with:
         path: encrypted_storage
         merge-multiple: true
 
-    - name: Decrypt and Map Data
+    - name: 취합 데이터 복호화
       run: |
         mkdir -p results
         for f in encrypted_storage/*.gpg; do
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: Build Intelligent Excel Report
+    - name: 지능형 컬러 엑셀 리포트 제작
       run: python -u txt_to_excel.py
 
-    # 💡 [핵심 복구 코드] 제가 빼먹었던 엑셀 파일을 깃허브에 아티팩트로 저장하는 스텝입니다!
-    - name: Store Final Excel Report in GitHub Artifacts
+    - name: 💡 깃허브 아티팩트에 최종 엑셀 파일 저장
       uses: actions/upload-artifact@v4
       with:
         name: passive-recon-master-report
         path: reports/passive_recon_report_v1.xlsx
         retention-days: 14
 
-    - name: Alert Discord
+    - name: 디스코드 엑셀 자동 배송
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
