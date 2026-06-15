@@ -9,7 +9,7 @@ collect_master() {
     local raw_domain=$(echo "$1" | xargs)
     [[ -z "$raw_domain" || "$raw_domain" =~ ^# ]] && return
 
-    # 와일드카드 처리 로직 (*.test.com -> 서브도메인 전체 스캔)
+    # 기본 변수 세팅
     local base_domain="$raw_domain"
     local safe_domain="$raw_domain"
     local regex="^https?://${raw_domain//./\.}(/|$)"
@@ -18,25 +18,29 @@ collect_master() {
         base_domain="${raw_domain#\*.}"
         safe_domain="wild_${base_domain}"
         regex="^https?://([a-zA-Z0-9.-]+\.)?${base_domain//./\.}(/|$)"
-        echo "[+] [${raw_domain}] 🔍 와일드카드(*) 감지: 서브도메인을 모두 포함하여 정찰을 시작합니다."
+        echo "[+] [${raw_domain}] 🔍 와일드카드 감지: 루트 도메인($base_domain)과 서브도메인을 동시에 긁어옵니다."
+        
+        # 💡 [핵심 최적화] 아카이브 누락 방지를 위해 루트 도메인과 와일드카드 도메인을 동시에 질의하여 병합
+        (echo "$base_domain"; echo "*.$base_domain") | gau --subs > "results/${safe_domain}_gau.txt" 2>/dev/null
+        (echo "$base_domain"; echo "*.$base_domain") | waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
     else
         echo "[+] [${raw_domain}] 🔍 단일 도메인 감지: 서브도메인을 엄격히 차단하고 정찰합니다."
+        
+        echo "$base_domain" | gau > "results/${safe_domain}_gau.txt" 2>/dev/null
+        echo "$base_domain" | waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
     fi
 
-    echo "  -> [1단계: 아카이브 API 수집기] 과거 URL 박물관 기록을 동기화합니다..."
-    
-    # gau는 자동으로 서브도메인을 찾아주므로 기본 도메인만 던져줍니다.
-    echo "$base_domain" | gau --subs > "results/${safe_domain}_gau.txt" 2>/dev/null
+    # 정규식(Regex)을 통한 확실한 필터링 및 중복 제거
     grep -iE "$regex" "results/${safe_domain}_gau.txt" | sort -u -o "results/${safe_domain}_gau.txt"
-
-    echo "$base_domain" | waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
     grep -iE "$regex" "results/${safe_domain}_waybackurls.txt" | sort -u -o "results/${safe_domain}_waybackurls.txt"
 
+    # JS 파일만 추출
     cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" 2>/dev/null | grep -E '\.js($|\?)' 2>/dev/null | sort -u > "results/${safe_domain}_js_master_list.txt"
     
     local total_js=$(wc -l < "results/${safe_domain}_js_master_list.txt")
     echo "  -> [성공] 총 ${total_js}개의 자바스크립트(JS) 소스 경로를 식별했습니다."
 
+    # 실물 소스코드 다운로드 파트 (1000개 제한)
     if [ "$total_js" -gt 0 ]; then
         local download_dir="results/${safe_domain}_js_files"
         mkdir -p "$download_dir"
