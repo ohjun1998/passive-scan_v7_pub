@@ -11,14 +11,18 @@ def make_absolute(url, domain):
     elif url.startswith('/'): return f"https://{domain}{url}"
     else: return f"https://{domain}/{url}"
 
+def get_safe_domain(target):
+    return "wild_" + target[2:] if target.startswith('*.') else target
+
 def run_mixer():
-    print("[+] Starting Global Shuffle & Chunker Engine...")
+    print("[+] 글로벌 셔플 엔진 가동 (분산 타격 준비)...")
     if not os.path.exists('targets.txt'): return
     
     with open('targets.txt', 'r') as f:
         targets = [line.strip() for line in f if line.strip()]
 
-    # URL 복원용 매핑 테이블 로드
+    target_map = {get_safe_domain(t): t for t in targets}
+
     js_url_converter = {}
     for mf in glob.glob('results/*_js_mapping.txt'):
         try:
@@ -37,8 +41,13 @@ def run_mixer():
         filename = os.path.basename(file_path).lower()
         match = re.match(r'^(.*)_(linkfinder|trufflehog|gau|waybackurls)\.txt$', filename)
         if not match: continue
-        domain = match.group(1)
-        if domain not in targets: continue
+        
+        safe_domain = match.group(1)
+        if safe_domain not in target_map: continue
+        
+        raw_target = target_map[safe_domain]
+        is_wildcard = raw_target.startswith('*.')
+        base_domain = raw_target[2:] if is_wildcard else raw_target
 
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -51,13 +60,20 @@ def run_mixer():
                     if '\t' in line_str: raw_url = line_str.split('\t', 1)[1]
                     else: raw_url = line_str
 
-                    abs_url = make_absolute(raw_url, domain)
+                    abs_url = make_absolute(raw_url, base_domain)
                     parsed_netloc = urlparse(abs_url).netloc.split(':')[0]
-                    if parsed_netloc == domain:
-                        all_urls.add(abs_url)
+                    
+                    # 와일드카드면 서브도메인 모두 허용, 아니면 엄격한 일치만 허용
+                    if is_wildcard:
+                        if not (parsed_netloc == base_domain or parsed_netloc.endswith('.' + base_domain)):
+                            continue
+                    else:
+                        if parsed_netloc != base_domain:
+                            continue
+                            
+                    all_urls.add(abs_url)
         except: pass
 
-    # 정적 데이터 네트워크 낭비 차단 필터
     junk_exts = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.css', '.woff', '.woff2', '.ico', '.eot', '.ttf', '.mp4')
     valid_targets = []
     
@@ -65,11 +81,9 @@ def run_mixer():
         if not urlparse(u).path.lower().endswith(junk_exts):
             valid_targets.append(u)
 
-    # 🚀 [천재적 전술] 도메인 경계를 완전히 무너뜨리고 30만개 전체 타겟을 뒤섞음 (Global Shuffle)
     random.shuffle(valid_targets)
-    print(f"[+] Total core verifiable URLs after global shuffle: {len(valid_targets)}")
+    print(f"[+] 정적 자산을 제거한 순수 점검 대상 URL: 총 {len(valid_targets)} 개 (글로벌 셔플 완료)")
 
-    # 20대 타격 노드가 동시 난사할 수 있도록 청크 파일 분배
     os.makedirs('chunks', exist_ok=True)
     num_chunks = 20
     
@@ -82,7 +96,7 @@ def run_mixer():
         chunk_data = valid_targets[i*chunk_size : (i+1)*chunk_size]
         with open(f'chunks/chunk_{i:02d}.txt', 'w') as f:
             for url in chunk_data: f.write(url + '\n')
-        print(f"  -> Generated chunks/chunk_{i:02d}.txt : {len(chunk_data)} tokens.")
+        print(f"  -> 노드 {i:02d} 배정 완료: {len(chunk_data)} 개의 타겟 할당")
 
 if __name__ == '__main__':
     run_mixer()
