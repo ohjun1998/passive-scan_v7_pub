@@ -15,8 +15,18 @@ def make_absolute(url, domain):
 def get_safe_domain(target):
     return "wild_" + target[2:] if target.startswith('*.') else target
 
+# 💡 [핵심 엔진] REST API 중간 경로의 노이즈를 강제 정규화하는 함수
+def normalize_dynamic_path(path):
+    # 1. UUID 규격 변환 (예: 123e4567-e89b... -> {UUID})
+    p = re.sub(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', '{UUID}', path)
+    # 2. 3자리 이상의 연속된 숫자 변환 (상품 ID, 회원 번호, 웹툰 에피소드 번호 등 -> {ID})
+    p = re.sub(r'\b\d{3,}\b', '{ID}', p)
+    # 3. 10자리 이상의 영문+숫자 혼합 해시 변환 (웹팩 청크, 세션 토큰 등 -> {HASH})
+    p = re.sub(r'\b[a-zA-Z0-9]{10,}\b', '{HASH}', p)
+    return p
+
 def run_mixer():
-    print("[+] 글로벌 셔플 엔진 가동 (스마트 파라미터 & 동적 경로 필터링)...")
+    print("[+] 글로벌 셔플 엔진 가동 (REST API 동적 경로 & 해시 완벽 필터링)...")
     if not os.path.exists('targets.txt'): return
     
     with open('targets.txt', 'r') as f:
@@ -75,28 +85,37 @@ def run_mixer():
         except: pass
 
     junk_exts = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.css', '.woff', '.woff2', '.ico', '.eot', '.ttf', '.mp4')
-    valid_targets = []
+    # 💡 [블랙리스트] 스캔 도중 강제 로그아웃이나 데이터 삭제를 유발하는 파괴적 엔드포인트 차단
+    blacklist_words = ['logout', 'signout', 'delete', 'remove', 'revoke', 'destroy']
     
-    # 💡 [진화된 핵심 최적화] 폴더(Directory) + 확장자(Ext) + 쿼리키(Query) 3중 구조 분석
+    valid_targets = []
     signature_counts = {}
     
     for u in all_urls:
         parsed = urlparse(u)
         
+        # 1. 정적 쓰레기 확장자 차단
         if parsed.path.lower().endswith(junk_exts):
             continue
             
+        # 2. 파괴적 엔드포인트(블랙리스트) 차단
+        url_lower = u.lower()
+        if any(b in url_lower for b in blacklist_words):
+            continue
+            
+        # 3. 쿼리 파라미터(Key) 구조 추출
         query_keys = tuple(sorted([k for k, v in parse_qsl(parsed.query, keep_blank_values=True)]))
         
-        # 경로의 마지막 부분을 변수(해시/ID)로 간주하고 폴더 위치와 확장자만 추출
-        # 예: /a/b/c/ei39dnr9.js -> path_dir: '/a/b/c', path_ext: '.js'
-        # 예: /api/user/123 -> path_dir: '/api/user', path_ext: ''
-        path_dir = posixpath.dirname(parsed.path)
-        path_ext = posixpath.splitext(parsed.path)[1]
+        # 4. REST API 경로 정규화 (숫자/해시 -> {ID} 치환)
+        normalized_path = normalize_dynamic_path(parsed.path)
         
+        path_dir = posixpath.dirname(normalized_path)
+        path_ext = posixpath.splitext(normalized_path)[1]
+        
+        # 5. 최종 시그니처 묶음 생성
         signature = (parsed.netloc, path_dir, path_ext, query_keys)
         
-        # 동일한 구조의 URL이 5개 이상이면 폐기
+        # 동일 구조 5개 제한 (6개째부터는 가차 없이 폐기)
         if signature_counts.get(signature, 0) >= 5:
             continue
             
@@ -104,7 +123,7 @@ def run_mixer():
         valid_targets.append(u)
 
     random.shuffle(valid_targets)
-    print(f"[+] 스마트 필터링 및 글로벌 셔플 완료! 최종 점검 대상: 총 {len(valid_targets)} 개")
+    print(f"[+] 노이즈 완전 제거 및 글로벌 셔플 완료! 최종 점검 대상: 총 {len(valid_targets)} 개")
 
     os.makedirs('chunks', exist_ok=True)
     num_chunks = 20
