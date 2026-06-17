@@ -5,7 +5,7 @@ import re
 import json
 import posixpath
 from urllib.parse import urlparse, parse_qsl
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -39,7 +39,7 @@ def normalize_dynamic_path(path):
     return p
 
 def build_advanced_excel_report():
-    print("[+] 차분 분석(Differential Analysis) 및 엑셀 엔진 가동 중...", flush=True)
+    print("[+] 초고속 텍스트 DB 기반 차분 분석(Differential Analysis) 엔진 가동 중...", flush=True)
     if not os.path.exists('targets.txt'): return
     with open('targets.txt', 'r') as f: targets = [line.strip() for line in f if line.strip()]
 
@@ -54,36 +54,22 @@ def build_advanced_excel_report():
                         js_url_converter[s] = o
         except: pass
 
-    # 💡 [핵심 추가] 이전 엑셀 파일을 읽어 이미 스캔했던 URL들을 메모리에 학습
+    # 💡 [초고속 최적화] 무거운 엑셀 대신 가벼운 텍스트 DB(master_url_db.txt)를 읽어옵니다.
     previous_urls = set()
-    prev_report_path = 'previous_report/passive_recon_report_v1.xlsx'
-    if os.path.exists(prev_report_path):
+    prev_db_path = 'previous_report/master_url_db.txt'
+    
+    if os.path.exists(prev_db_path):
         try:
-            print("[*] 이전 스캔 데이터를 분석하여 신규 URL을 판별합니다...")
-            wb_prev = load_workbook(prev_report_path, read_only=True)
-            for sheet in wb_prev.worksheets:
-                if sheet.title in ["Summary Dashboard", "High Risk Targets"]: continue
-                
-                url_col_idx = None
-                for row in sheet.iter_rows(min_row=1, max_row=2, values_only=True):
-                    for idx, val in enumerate(row):
-                        if str(val).strip() == "타겟 절대 경로 (URL)":
-                            url_col_idx = idx
-                            break
-                    if url_col_idx is not None: break
-                
-                if url_col_idx is None: url_col_idx = 4 # 하위 호환성 (5번째 컬럼)
-                
-                for row in sheet.iter_rows(min_row=3, values_only=True):
-                    if len(row) > url_col_idx:
-                        url = row[url_col_idx]
-                        if url and isinstance(url, str) and url.startswith('http'):
-                            previous_urls.add(url)
-            print(f"[+] 학습 완료 (과거 데이터베이스: {len(previous_urls)}개 엔드포인트 유지 중)")
+            print(f"[*] 이전 스캔 텍스트 DB({prev_db_path})를 불러옵니다...")
+            with open(prev_db_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    url = line.strip()
+                    if url: previous_urls.add(url)
+            print(f"[+] 텍스트 DB 학습 완료 (과거 데이터베이스: {len(previous_urls)}개 엔드포인트 유지 중)")
         except Exception as e:
-            print(f"[-] 이전 보고서 파싱 실패 (모두 신규로 처리): {e}")
+            print(f"[-] 텍스트 DB 파싱 실패 (모두 신규로 처리): {e}")
     else:
-        print("[!] 최초 실행 또는 이전 데이터가 없습니다. (모든 URL이 '신규'로 처리됩니다)")
+        print("[!] 이전 텍스트 DB가 없습니다. (최초 실행 - 모든 URL이 '신규'로 처리됩니다)")
 
     matrix_data = {raw_target: {} for raw_target in targets}
     signature_counts = {}
@@ -146,7 +132,7 @@ def build_advanced_excel_report():
                             continue 
                         signature_counts[signature] = signature_counts.get(signature, 0) + 1
                         
-                        # 💡 [핵심 추가] 이전 데이터베이스에 없는 URL이면 '신규(New)' 태그 부여
+                        # 과거 텍스트 DB(previous_urls)에 없으면 신규 태그 부착
                         is_new = abs_url not in previous_urls
                         matrix_data[raw_target][abs_url] = {"tools": set(), "files": set(), "is_new": is_new}
                         
@@ -155,7 +141,21 @@ def build_advanced_excel_report():
                         matrix_data[raw_target][abs_url]["files"].add(js_file)
         except: pass
 
-    # 💡 디스코드 알림을 위한 전체 신규 발견 URL 총합 계산 및 저장
+    # reports 폴더 생성
+    os.makedirs('reports', exist_ok=True)
+
+    # 💡 [텍스트 DB 생성] 오늘 취합된 모든 정제 URL을 다음 스캔을 위해 저장합니다.
+    all_current_urls = set()
+    for url_map in matrix_data.values():
+        for url in url_map.keys():
+            all_current_urls.add(url)
+            
+    with open('reports/master_url_db.txt', 'w', encoding='utf-8') as f:
+        for u in sorted(all_current_urls):
+            f.write(u + '\n')
+    print(f"[+] 새로운 텍스트 DB 백업 완료 (총 {len(all_current_urls)}개 기록됨)")
+
+    # 디스코드 알림을 위한 전체 신규 발견 URL 총합 계산 및 저장
     total_new_found = sum(1 for url_map in matrix_data.values() for data in url_map.values() if data["is_new"])
     with open('reports/new_count.txt', 'w') as f:
         f.write(str(total_new_found))
@@ -175,19 +175,12 @@ def build_advanced_excel_report():
     align_center, align_left = Alignment(horizontal='center', vertical='center'), Alignment(horizontal='left', vertical='center')
     thin_border = Border(left=Side(style="thin", color="E0E0E0"), right=Side(style="thin", color="E0E0E0"), top=Side(style="thin", color="E0E0E0"), bottom=Side(style="thin", color="E0E0E0"))
 
-    # ==========================================
-    # 1. Summary Dashboard 생성 (🔥 신규 발견 컬럼 추가)
-    # ==========================================
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     ws_dash.append(["No", "타겟 도메인", "완전 정제된 URL 수", "🔥 신규 발견", "jsluice 추출 개수", "TruffleHog 탐지 개수"])
     for c in range(1, 7): ws_dash.cell(1, c).font = font_header; ws_dash.cell(1, c).fill = fill_header; ws_dash.cell(1, c).alignment = align_center; ws_dash.cell(1, c).border = thin_border
 
-    # ==========================================
-    # 2. High Risk Targets 시트 생성
-    # ==========================================
     ws_high = wb.create_sheet(title="High Risk Targets")
-    
     ws_high.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
     ws_high.merge_cells('A1:H1')
     back_cell_h = ws_high.cell(row=1, column=1)
@@ -200,20 +193,13 @@ def build_advanced_excel_report():
     for c in range(1, 9): ws_high.cell(2, c).font = font_header; ws_high.cell(2, c).fill = fill_header; ws_high.cell(2, c).alignment = align_center; ws_high.cell(2, c).border = thin_border
 
     high_risk_keywords = ['config', '.env', 'xml', 'json', 'secret', 'api/v', 'token', 'admin', 'password', 'key', 'credential', 'mysql']
-    
-    dash_idx = 2
-    high_risk_idx = 3
+    dash_idx, high_risk_idx = 2, 3
 
-    # ==========================================
-    # 3. 개별 도메인별 데이터 삽입 및 시트 생성
-    # ==========================================
     for raw_target, url_map in matrix_data.items():
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
         passive_count = sum(1 for data in url_map.values() if 'Waybackurls' in data["tools"] or 'GAU' in data["tools"])
         jsluice_count = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
-        
-        # 도메인별 신규 추가된 URL 갯수 파악
         domain_new_count = sum(1 for data in url_map.values() if data["is_new"])
         
         ws_dash.append([dash_idx - 1, escape_formula(raw_target), passive_count, domain_new_count, jsluice_count, trufflehog_count])
@@ -226,7 +212,6 @@ def build_advanced_excel_report():
         if not url_map: continue
 
         ws = wb.create_sheet(title=sheet_title)
-        
         ws.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
         ws.merge_cells('A1:F1')
         back_cell = ws.cell(row=1, column=1)
@@ -238,7 +223,6 @@ def build_advanced_excel_report():
         ws.append(["No", "🔥 신규여부", "소스 출처", "발견된 JS 파일명", "응답 상태", "타겟 절대 경로 (URL)"]) 
         for c in range(1, 7): ws.cell(2, c).font = font_header; ws.cell(2, c).fill = fill_header; ws.cell(2, c).alignment = align_center; ws.cell(2, c).border = thin_border
 
-        # 💡 [핵심 정렬 로직] is_new가 True인 것을 가장 상단으로 끌어올려 채웁니다.
         sorted_urls = sorted(url_map.items(), key=lambda x: (not x[1]["is_new"], x[0]))
 
         for sub_idx, (url, data) in enumerate(sorted_urls, 1):
@@ -263,10 +247,7 @@ def build_advanced_excel_report():
                 cell = ws.cell(row_num, c)
                 cell.font = font_data; cell.border = thin_border
                 if (row_num % 2) == 1: cell.fill = fill_zebra
-                
-                # 'NEW' 마크가 붙은 칸을 핑크색/보라색으로 강조합니다.
-                if c == 2 and data["is_new"]:
-                    cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                if c == 2 and data["is_new"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 
                 if c == 5:
                     cell.fill = PatternFill(start_color=get_status_color(current_status), end_color=get_status_color(current_status), fill_type='solid')
@@ -275,10 +256,8 @@ def build_advanced_excel_report():
                 else: cell.alignment = align_center
 
             is_high_risk, reason = False, ""
-            if 'TruffleHog' in data["tools"]: 
-                is_high_risk, reason = True, "TruffleHog 검증 완료: 민감 키(Secret) 유출 징후 탐지"
-            elif is_blacklist:
-                is_high_risk, reason = True, "파괴적 엔드포인트 (Httpx 스캔 제외 및 수동 점검 요망)"
+            if 'TruffleHog' in data["tools"]: is_high_risk, reason = True, "TruffleHog 검증 완료: 민감 키(Secret) 유출 징후 탐지"
+            elif is_blacklist: is_high_risk, reason = True, "파괴적 엔드포인트 (Httpx 스캔 제외 및 수동 점검 요망)"
             else:
                 matched = [key for key in high_risk_keywords if key in url.lower()]
                 if matched: is_high_risk, reason = True, f"민감 키워드 감지 ({', '.join(matched)})"
@@ -289,9 +268,7 @@ def build_advanced_excel_report():
                     cell = ws_high.cell(high_risk_idx, c)
                     cell.font = font_data; cell.border = thin_border
                     if (high_risk_idx % 2) == 1: cell.fill = fill_zebra
-                    
-                    if c == 2 and data["is_new"]:
-                        cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                    if c == 2 and data["is_new"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                     
                     if c == 5:
                         cell.fill = PatternFill(start_color=get_status_color(current_status), end_color=get_status_color(current_status), fill_type='solid')
@@ -325,10 +302,8 @@ def build_advanced_excel_report():
 
     ws_dash.column_dimensions['B'].width = 35
     wb.active = 0 
-    
-    os.makedirs('reports', exist_ok=True)
     wb.save('reports/passive_recon_report_v1.xlsx')
-    print("[+] 모든 엑셀 보고서 렌더링이 성공적으로 완료되었습니다!", flush=True)
+    print("[+] 텍스트 DB 기반 모든 보고서 렌더링이 성공적으로 완료되었습니다!", flush=True)
 
 if __name__ == '__main__':
     build_advanced_excel_report()
