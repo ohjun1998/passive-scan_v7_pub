@@ -236,11 +236,10 @@ jobs:
     - name: 지능형 컬러 엑셀 리포트 제작 및 텍스트 DB 업데이트
       run: python -u txt_to_excel.py
 
-    # 💡 [보안 최적화] 무거운 엑셀과 가벼운 텍스트 DB를 함께 ZIP으로 묶어서 보관합니다.
     - name: 최종 엑셀 리포트 및 텍스트 DB 비밀번호 암호화 (Secure ZIP)
       run: |
         cd reports
-        zip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip passive_recon_report_v1.xlsx master_url_db.txt
+        zip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip passive_recon_report_*.xlsx master_url_db.txt
         cd ..
 
     - name: 깃허브 아티팩트에 금고형 엑셀 파일 저장
