@@ -28,6 +28,7 @@ def get_status_color(status):
     if status_str.startswith('5'): return 'DC3545'
     if 'Static' in status_str: return 'A8B8D0'
     if 'Skipped' in status_str: return 'E83E8C' 
+    if 'Legacy' in status_str: return '6C757D'
     return '6C757D'
 
 def get_safe_domain(target):
@@ -45,6 +46,20 @@ def build_advanced_excel_report():
     with open('targets.txt', 'r') as f: targets = [line.strip() for line in f if line.strip()]
 
     target_map = {get_safe_domain(t): t for t in targets}
+    
+    # 💡 [신규 DB 적용] 과거에 다운로드 완료한 JS 파일 DB 불러오기
+    downloaded_js_set = set()
+    prev_js_db_path = 'previous_report/downloaded_js_db.txt'
+    if os.path.exists(prev_js_db_path):
+        try:
+            with open(prev_js_db_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    url = line.strip()
+                    if url: downloaded_js_set.add(url)
+            print(f"[*] JS 분석 이력 DB 로드 완료 (총 {len(downloaded_js_set)}개 스킵 예정)")
+        except Exception as e:
+            pass
+
     js_url_converter = {}
     for mf in glob.glob('results/*_js_mapping.txt'):
         try:
@@ -53,6 +68,7 @@ def build_advanced_excel_report():
                     if '\t' in line:
                         s, o = line.strip().split('\t', 1)
                         js_url_converter[s] = o
+                        downloaded_js_set.add(o) # 오늘 새롭게 성공한 JS도 추가
         except: pass
 
     previous_urls = set()
@@ -146,7 +162,6 @@ def build_advanced_excel_report():
                         matrix_data[raw_target][abs_url]["files"].add(js_file)
         except: pass
 
-    # 💡 [핵심 패치] 오늘 수집기가 놓친 과거 DB의 URL들을 이질감 없이 완전히 섞습니다!
     for prev_url in previous_urls:
         parsed_netloc = urlparse(prev_url).netloc.split(':')[0]
         matched_raw_target = None
@@ -166,7 +181,6 @@ def build_advanced_excel_report():
                     
         if matched_raw_target:
             if prev_url not in matrix_data[matched_raw_target]:
-                # '과거기록' 글자 제거 및 일반 Passive Archive 로 매핑
                 matrix_data[matched_raw_target][prev_url] = {
                     "tools": {"Passive Archive"},
                     "files": set(),
@@ -185,6 +199,11 @@ def build_advanced_excel_report():
         for u in sorted(all_cumulative_urls):
             f.write(u + '\n')
     print(f"[+] 텍스트 DB 영구 누적 백업 완료 (총 {len(all_cumulative_urls)}개 기록됨)")
+
+    # 💡 [신규 DB 적용] JS 다운로드 기록 영구 저장
+    with open('reports/downloaded_js_db.txt', 'w', encoding='utf-8') as f:
+        for u in sorted(downloaded_js_set):
+            f.write(u + '\n')
 
     total_new_found = sum(1 for url_map in matrix_data.values() for data in url_map.values() if data.get("is_new", False))
     with open('reports/new_count.txt', 'w') as f:
@@ -277,7 +296,6 @@ def build_advanced_excel_report():
             is_new_mark = "🆕 NEW" if data.get("is_new", False) else "-"
             is_blacklist = any(b in url.lower() for b in blacklist_words)
             
-            # 💡 [핵심 패치] 미스캔, 회색 처리 로직 삭제. Httpx가 진짜 검사한 결과값으로 깔끔하게 색상이 지정됨.
             if is_blacklist:
                 current_status = "Skipped(위험)"
             elif urlparse(url).path.lower().endswith(junk_extensions):
