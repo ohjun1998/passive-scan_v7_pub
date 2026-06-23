@@ -28,7 +28,6 @@ def get_status_color(status):
     if status_str.startswith('5'): return 'DC3545'
     if 'Static' in status_str: return 'A8B8D0'
     if 'Skipped' in status_str: return 'E83E8C' 
-    if 'Legacy' in status_str: return '6C757D'
     return '6C757D'
 
 def get_safe_domain(target):
@@ -47,7 +46,6 @@ def build_advanced_excel_report():
 
     target_map = {get_safe_domain(t): t for t in targets}
     
-    # 💡 [신규 DB 적용] 과거에 다운로드 완료한 JS 파일 DB 불러오기
     downloaded_js_set = set()
     prev_js_db_path = 'previous_report/downloaded_js_db.txt'
     if os.path.exists(prev_js_db_path):
@@ -68,7 +66,7 @@ def build_advanced_excel_report():
                     if '\t' in line:
                         s, o = line.strip().split('\t', 1)
                         js_url_converter[s] = o
-                        downloaded_js_set.add(o) # 오늘 새롭게 성공한 JS도 추가
+                        downloaded_js_set.add(o)
         except: pass
 
     previous_urls = set()
@@ -200,7 +198,6 @@ def build_advanced_excel_report():
             f.write(u + '\n')
     print(f"[+] 텍스트 DB 영구 누적 백업 완료 (총 {len(all_cumulative_urls)}개 기록됨)")
 
-    # 💡 [신규 DB 적용] JS 다운로드 기록 영구 저장
     with open('reports/downloaded_js_db.txt', 'w', encoding='utf-8') as f:
         for u in sorted(downloaded_js_set):
             f.write(u + '\n')
@@ -209,6 +206,7 @@ def build_advanced_excel_report():
     with open('reports/new_count.txt', 'w') as f:
         f.write(str(total_new_found))
 
+    # 응답코드 데이터를 메모리에 로드
     status_codes = {}
     for res_file in glob.glob('results/httpx_results_*.json'):
         try:
@@ -224,10 +222,21 @@ def build_advanced_excel_report():
     align_center, align_left = Alignment(horizontal='center', vertical='center'), Alignment(horizontal='left', vertical='center')
     thin_border = Border(left=Side(style="thin", color="E0E0E0"), right=Side(style="thin", color="E0E0E0"), top=Side(style="thin", color="E0E0E0"), bottom=Side(style="thin", color="E0E0E0"))
 
+    # ==========================================
+    # 1. Summary Dashboard 생성 (🌟 중요 응답코드 및 jsluice 신/구 분리 반영)
+    # ==========================================
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
-    ws_dash.append(["No", "타겟 도메인", "🌟 신규 서브", "엑셀 누적 URL 수", "🔥 신규 발견", "jsluice 추출 개수", "TruffleHog 탐지 개수"])
-    for c in range(1, 8): ws_dash.cell(1, c).font = font_header; ws_dash.cell(1, c).fill = fill_header; ws_dash.cell(1, c).alignment = align_center; ws_dash.cell(1, c).border = thin_border
+    
+    dash_headers = [
+        "No", "타겟 도메인", "🌟 신규 서브", "엑셀 누적 URL", "🔥 신규 발견", 
+        "jsluice (기존)", "🔥 jsluice (신규)", "TruffleHog 탐지", 
+        "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
+    ]
+    ws_dash.append(dash_headers)
+    for c in range(1, len(dash_headers) + 1): 
+        ws_dash.cell(1, c).font = font_header; ws_dash.cell(1, c).fill = fill_header
+        ws_dash.cell(1, c).alignment = align_center; ws_dash.cell(1, c).border = thin_border
 
     ws_high = wb.create_sheet(title="High Risk Targets")
     ws_high.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
@@ -246,29 +255,57 @@ def build_advanced_excel_report():
 
     for raw_target, url_map in matrix_data.items():
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
-        passive_count = sum(1 for data in url_map.values() if 'Waybackurls' in data["tools"] or 'GAU' in data["tools"] or 'Passive Archive' in data["tools"])
-        jsluice_count = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
-        trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
-        domain_new_count = sum(1 for data in url_map.values() if data.get("is_new", False))
         
+        # 전체 카운트
+        passive_count = len(url_map) # 전체 누적 URL 수 (이질감 패치 이후 전체가 누적됨)
+        domain_new_count = sum(1 for data in url_map.values() if data.get("is_new", False))
+        trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
+        
+        # 💡 [핵심 패치] jsluice(LinkFinder) 신/구 데이터 완벽 분리
+        jsluice_old = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and not data.get("is_new", False))
+        jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
+        
+        # 💡 [핵심 패치] 타겟 도메인별 주요 응답 상태 코드(200, 401/403, 500) 추출
+        count_200 = 0
+        count_40x = 0
+        count_50x = 0
+        
+        for url in url_map.keys():
+            status = str(status_codes.get(url, 'Dead'))
+            if status.startswith('2'):
+                count_200 += 1
+            elif status in ['401', '403']:
+                count_40x += 1
+            elif status.startswith('5'):
+                count_50x += 1
+
+        # 신규 서브도메인 감지
         current_subdomains = {urlparse(u).netloc for u in url_map.keys()}
         new_subdomains = current_subdomains - previous_subdomains
         has_new_sub = bool(new_subdomains) and bool(previous_subdomains)
-        
         sub_dash_mark = "🌟 신규" if has_new_sub else "-"
         
-        ws_dash.append([dash_idx - 1, escape_formula(raw_target), sub_dash_mark, passive_count, domain_new_count, jsluice_count, trufflehog_count])
-        for c in range(1, 8):
+        # 대시보드 열에 데이터 주입
+        ws_dash.append([
+            dash_idx - 1, escape_formula(raw_target), sub_dash_mark, 
+            passive_count, domain_new_count, 
+            jsluice_old, jsluice_new, trufflehog_count,
+            count_200, count_40x, count_50x
+        ])
+        
+        for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = font_data; cell.border = thin_border
             cell.alignment = align_left if c == 2 else align_center
             
+            # 파란색 하이퍼링크 세팅
             if c == 2 and url_map:
                 cell.hyperlink = f"#'{sheet_title}'!A1"
                 cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
             
-            if c == 3 and has_new_sub:
-                cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            # 신규 서브도메인, 신규 jsluice 추출 하이라이팅
+            if c == 3 and has_new_sub: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            if c == 7 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 
         dash_idx += 1
 
@@ -351,9 +388,11 @@ def build_advanced_excel_report():
                     else: cell.alignment = align_center
                 high_risk_idx += 1
 
+    # 대시보드 하단 총 합계 수식 동적 렌더링
     if dash_idx > 2:
-        ws_dash.append(["", "📊 총 합계 (Total)", "-", f"=SUM(D2:D{dash_idx-1})", f"=SUM(E2:E{dash_idx-1})", f"=SUM(F2:F{dash_idx-1})", f"=SUM(G2:G{dash_idx-1})"])
-        for c in range(1, 8):
+        sum_formulas = [f"=SUM({get_column_letter(c)}2:{get_column_letter(c)}{dash_idx-1})" for c in range(4, len(dash_headers) + 1)]
+        ws_dash.append(["", "📊 총 합계 (Total)", "-"] + sum_formulas)
+        for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF')
             cell.fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
@@ -371,7 +410,8 @@ def build_advanced_excel_report():
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header == "탐지 사유": sheet.column_dimensions[col_letter].width = 40  
             elif header == "응답 상태": sheet.column_dimensions[col_letter].width = 16
-            elif header in ["🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브"]: sheet.column_dimensions[col_letter].width = 16
+            elif header in ["🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브"]: sheet.column_dimensions[col_letter].width = 15
+            elif any(k in header for k in ["jsluice", "TruffleHog", "200", "403", "500"]): sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
