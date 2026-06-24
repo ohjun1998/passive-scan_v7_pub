@@ -211,18 +211,33 @@ def build_advanced_excel_report():
     with open('reports/new_count.txt', 'w') as f:
         f.write(str(total_new_found))
 
+    # 💡 [핵심 패치] Httpx 및 Nuclei 결과 동시 파싱
     status_codes = {}
     for res_file in glob.glob('results/httpx_results_*.json'):
         try:
             with open(res_file, 'r', errors='ignore') as f:
                 for line in f:
+                    if not line.strip(): continue
                     data = json.loads(line.strip())
                     status_codes[data.get('url')] = data.get('status_code', 'Dead')
         except: pass
 
-    # ==========================================
-    # 💡 [신규 패치] Postman Collection (JSON) 빌드 엔진
-    # ==========================================
+    nuclei_findings = {}
+    for res_file in glob.glob('results/nuclei_results_*.json'):
+        try:
+            with open(res_file, 'r', errors='ignore') as f:
+                for line in f:
+                    if not line.strip(): continue
+                    data = json.loads(line.strip())
+                    url = data.get('matched-at', data.get('host', ''))
+                    name = data.get('info', {}).get('name', 'Unknown')
+                    sev = data.get('info', {}).get('severity', 'INFO').upper()
+                    if url:
+                        if url not in nuclei_findings:
+                            nuclei_findings[url] = []
+                        nuclei_findings[url].append(f"[{sev}] {name}")
+        except: pass
+
     now_str = datetime.now().strftime("%Y%m%d_%H%M")
     
     postman_collection = {
@@ -234,20 +249,18 @@ def build_advanced_excel_report():
         "item": []
     }
 
-    # ==========================================
-    # 엑셀 보고서 생성 시작
-    # ==========================================
     wb = Workbook()
     font_header, fill_header = Font(name='Malgun Gothic', bold=True, color='FFFFFF'), PatternFill(start_color='2F3542', end_color='2F3542', fill_type='solid')
     font_data, fill_zebra = Font(name='Malgun Gothic', size=10, color='333333'), PatternFill(start_color='F8F9FA', end_color='F8F9FA', fill_type='solid')
     align_center, align_left = Alignment(horizontal='center', vertical='center'), Alignment(horizontal='left', vertical='center')
     thin_border = Border(left=Side(style="thin", color="E0E0E0"), right=Side(style="thin", color="E0E0E0"), top=Side(style="thin", color="E0E0E0"), bottom=Side(style="thin", color="E0E0E0"))
 
+    # 💡 [핵심 패치] 대시보드 헤더에 '🔥 Nuclei 탐지' 추가
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     dash_headers = [
         "No", "타겟 도메인", "🌟 신규 서브", "엑셀 누적 URL", "🔥 신규 발견", 
-        "jsluice (기존)", "🔥 jsluice (신규)", "TruffleHog 탐지", 
+        "jsluice (기존)", "🔥 jsluice (신규)", "🔥 Nuclei 탐지", "TruffleHog 탐지", 
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
     ws_dash.append(dash_headers)
@@ -274,7 +287,6 @@ def build_advanced_excel_report():
         
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
         
-        # 💡 [신규 패치] 포스트맨 컬렉션용 도메인 폴더 생성
         postman_folder = {
             "name": raw_target,
             "item": []
@@ -285,6 +297,9 @@ def build_advanced_excel_report():
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
         jsluice_old = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and not data.get("is_new", False))
         jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
+        
+        # 💡 [핵심 패치] 현재 타겟 도메인에서 발생한 Nuclei 탐지 건수 합산
+        nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
         
         count_200 = 0
         count_40x = 0
@@ -304,7 +319,7 @@ def build_advanced_excel_report():
         ws_dash.append([
             dash_idx - 1, escape_formula(raw_target), sub_dash_mark, 
             passive_count, domain_new_count, 
-            jsluice_old, jsluice_new, trufflehog_count,
+            jsluice_old, jsluice_new, nuclei_count, trufflehog_count,
             count_200, count_40x, count_50x
         ])
         
@@ -319,6 +334,7 @@ def build_advanced_excel_report():
             
             if c == 3 and has_new_sub: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             if c == 7 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            if c == 8 and nuclei_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 
         dash_idx += 1
 
@@ -344,7 +360,6 @@ def build_advanced_excel_report():
             is_new_mark = "🆕 NEW" if data.get("is_new", False) else "-"
             is_blacklist = any(b in url.lower() for b in blacklist_words)
             
-            # 💡 [신규 패치] 파괴적인 경로(logout 등)가 아니라면 포스트맨 컬렉션에 추가합니다.
             if not is_blacklist:
                 parsed_pm = urlparse(url)
                 path_parts = [p for p in parsed_pm.path.split('/') if p]
@@ -401,7 +416,12 @@ def build_advanced_excel_report():
 
             is_high_risk, reason = False, ""
             
-            if 'TruffleHog' in data["tools"]: 
+            # 💡 [핵심 패치] Nuclei가 잡아낸 실제 기술 스택 및 취약 노출 여부를 High Risk에 꽂아 넣음!
+            if url in nuclei_findings:
+                is_high_risk = True
+                n_reasons = " / ".join(list(set(nuclei_findings[url]))) # 중복 제거
+                reason = f"🔥 [Nuclei 탐지] {n_reasons}"
+            elif 'TruffleHog' in data["tools"]: 
                 is_high_risk, reason = True, "🔥 [Critical] TruffleHog: 소스코드 내 기밀 키(Secret) 유출 검증됨"
             elif is_blacklist: 
                 is_high_risk, reason = True, "⚠️ [Warning] 파괴적 엔드포인트 (스캔 스킵됨 - 수동 점검 요망)"
@@ -432,7 +452,6 @@ def build_advanced_excel_report():
                     else: cell.alignment = align_center
                 high_risk_idx += 1
 
-        # 완성된 도메인 폴더를 포스트맨 컬렉션 마스터에 병합
         if postman_folder["item"]:
             postman_collection["item"].append(postman_folder)
 
@@ -455,21 +474,19 @@ def build_advanced_excel_report():
             
             if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)"]: sheet.column_dimensions[col_letter].width = 80  
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
-            elif header == "탐지 사유": sheet.column_dimensions[col_letter].width = 40  
+            elif header == "탐지 사유": sheet.column_dimensions[col_letter].width = 45  
             elif header == "응답 상태": sheet.column_dimensions[col_letter].width = 16
             elif header in ["🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브"]: sheet.column_dimensions[col_letter].width = 15
-            elif any(k in header for k in ["jsluice", "TruffleHog", "200", "403", "500"]): sheet.column_dimensions[col_letter].width = 18
+            elif any(k in header for k in ["jsluice", "Nuclei", "TruffleHog", "200", "403", "500"]): sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
     wb.active = 0 
     
-    # 엑셀 보고서 저장
     report_filename = f"passive_recon_report_{now_str}.xlsx"
     wb.save(f'reports/{report_filename}')
     print(f"[+] 텍스트 DB 기반 누적 보고서({report_filename}) 렌더링 완료!")
 
-    # 💡 [신규 패치] 포스트맨 JSON 파일 저장
     postman_filename = f"postman_collection_{now_str}.json"
     with open(f'reports/{postman_filename}', 'w', encoding='utf-8') as f:
         json.dump(postman_collection, f, indent=4, ensure_ascii=False)
