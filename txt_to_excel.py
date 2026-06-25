@@ -4,6 +4,7 @@ import glob
 import re
 import json
 import posixpath
+import requests
 from datetime import datetime
 from urllib.parse import urlparse, parse_qsl
 from openpyxl import Workbook
@@ -211,7 +212,6 @@ def build_advanced_excel_report():
     with open('reports/new_count.txt', 'w') as f:
         f.write(str(total_new_found))
 
-    # 💡 [핵심 패치] Httpx 및 Nuclei 결과 동시 파싱
     status_codes = {}
     for res_file in glob.glob('results/httpx_results_*.json'):
         try:
@@ -238,6 +238,60 @@ def build_advanced_excel_report():
                         nuclei_findings[url].append(f"[{sev}] {name}")
         except: pass
 
+    # ==========================================
+    # 🔮 [버전업 패치] Gemini 3.5 Flash 지능형 취약점 평가 엔진 구동
+    # ==========================================
+    gemini_key = os.environ.get('GEMINI_API_KEY')
+    ai_ranked_results = []
+    
+    if gemini_key:
+        print("[+] Gemini 3.5 Flash 기반 초고속 지능형 취약점 우선순위 판단 스코어링 엔진을 가동합니다...", flush=True)
+        candidate_urls = []
+        for url_map in matrix_data.values():
+            for url, data in url_map.items():
+                sc = str(status_codes.get(url, 'Dead'))
+                # AI에 넣을 가치 있는 정제된 후보군 300개 추출 (살아있거나, 파라미터가 있거나, 특수 도구에 걸린 대상)
+                if url in nuclei_findings or 'TruffleHog' in data["tools"] or sc in ['200', '403', '401'] or '?' in url:
+                    candidate_urls.append(url)
+                    
+        candidate_urls = list(set(candidate_urls))[:300] # API 쿼터 및 시간 절약을 위한 상위 300개 제한
+        
+        if candidate_urls:
+            # 방화벽 및 타임아웃 방지를 위해 30개씩 분할 처리
+            for i in range(0, len(candidate_urls), 30):
+                batch = candidate_urls[i:i+30]
+                prompt = (
+                    "You are an elite Bug Bounty Hunter and Red Teamer. Analyze the following list of URLs discovered during reconnaissance.\n"
+                    "Evaluate the probability (0 to 100) that each URL contains a security vulnerability (such as IDOR, SSRF, SQLi, Privilege Escalation, Command Injection, or Sensitive Information Disclosure) based on its paths, parameters, and naming conventions.\n"
+                    "Return EXACTLY a JSON array of objects, with no markdown formatting, no backticks. Each object must contain these keys:\n"
+                    "- 'url': the exact URL string\n"
+                    "- 'probability': integer from 0 to 100\n"
+                    "- 'vuln_type': string of suspected vulnerability type\n"
+                    "- 'reason': short clear explanation in Korean of why this URL is high risk and how to test it.\n\n"
+                    f"URLs:\n{json.dumps(batch)}"
+                )
+                try:
+                    # 💡 [핵심 패치] Gemini 3.5 Flash 엔드포인트 적용
+                    g_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_key}"
+                    payload = {
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"responseMimeType": "application/json"}
+                    }
+                    res = requests.post(g_api_url, headers={"Content-Type": "application/json"}, json=payload, timeout=30)
+                    if res.status_code == 200:
+                        raw_reply = res.json()['candidates'][0]['content']['parts'][0]['text']
+                        parsed_list = json.loads(raw_reply)
+                        if isinstance(parsed_list, list):
+                            ai_ranked_results.extend(parsed_list)
+                except Exception as e:
+                    print(f"[-] Gemini 3.5 Flash API 배치 처리 중 소폭 누락 발생 (무시하고 계속 진행): {e}", flush=True)
+                    
+            # 확률 높은 순서대로 탑 티어 리스트 자동 내림차순 정렬
+            ai_ranked_results.sort(key=lambda x: x.get('probability', 0), reverse=True)
+            print(f"[+] Gemini 3.5 Flash 추론 완료! 총 {len(ai_ranked_results)}개의 초고위험 정밀 표적을 식별했습니다.")
+    else:
+        print("[!] GEMINI_API_KEY가 시스템에 설정되어 있지 않습니다. AI 정밀 분석 단계를 건너넙니다.")
+
     now_str = datetime.now().strftime("%Y%m%d_%H%M")
     
     postman_collection = {
@@ -255,7 +309,7 @@ def build_advanced_excel_report():
     align_center, align_left = Alignment(horizontal='center', vertical='center'), Alignment(horizontal='left', vertical='center')
     thin_border = Border(left=Side(style="thin", color="E0E0E0"), right=Side(style="thin", color="E0E0E0"), top=Side(style="thin", color="E0E0E0"), bottom=Side(style="thin", color="E0E0E0"))
 
-    # 💡 [핵심 패치] 대시보드 헤더에 '🔥 Nuclei 탐지' 추가
+    # Summary Dashboard 셋업
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     dash_headers = [
@@ -267,6 +321,40 @@ def build_advanced_excel_report():
     for c in range(1, len(dash_headers) + 1): 
         ws_dash.cell(1, c).font = font_header; ws_dash.cell(1, c).fill = fill_header
         ws_dash.cell(1, c).alignment = align_center; ws_dash.cell(1, c).border = thin_border
+
+    # 🔮 Gemini AI Ranking 전용 프리미엄 시트 신설
+    if ai_ranked_results:
+        ws_ai = wb.create_sheet(title="🔮 Gemini AI Ranking")
+        ws_ai.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
+        ws_ai.merge_cells('A1:E1')
+        back_cell_ai = ws_ai.cell(row=1, column=1)
+        back_cell_ai.hyperlink = "#'Summary Dashboard'!A1"
+        back_cell_ai.font = Font(name='Malgun Gothic', size=11, bold=True, color='0056B3', underline='single')
+        back_cell_ai.fill = PatternFill(start_color='E9ECEF', end_color='E9ECEF', fill_type='solid')
+        back_cell_ai.alignment = align_left
+        
+        ws_ai.append(["No", "🔮 취약점 발생 확률", "예상 취약점 분류", "타겟 절대 경로 (URL)", "Gemini AI 지능형 헌팅 가이드 심층 분석"])
+        for c in range(1, 6):
+            ws_ai.cell(2, c).font = font_header; ws_ai.cell(2, c).fill = PatternFill(start_color='4B0082', end_color='4B0082', fill_type='solid') # 보라색 테마
+            ws_ai.cell(2, c).alignment = align_center; ws_ai.cell(2, c).border = thin_border
+            
+        for ai_idx, res in enumerate(ai_ranked_results, 1):
+            prob = res.get('probability', 0)
+            prob_str = f"{prob}%"
+            ws_ai.append([ai_idx, prob_str, res.get('vuln_type', '-'), escape_formula(res.get('url', '-')), res.get('reason', '-')])
+            
+            row_num = ai_idx + 2
+            # 위험도별 체계적인 색상 그라데이션 하이라이트
+            if prob >= 80: fill_color = 'FFD2D2' # 고위험 - 연분홍
+            elif prob >= 50: fill_color = 'FFE4C4' # 중위험 - 귤색
+            else: fill_color = 'F8F9FA'
+                
+            for c in range(1, 6):
+                cell = ws_ai.cell(row_num, c)
+                cell.font = font_data; cell.border = thin_border; cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type='solid')
+                if c == 2: cell.font = Font(name='Malgun Gothic', bold=True, color='DC3545' if prob>=50 else '333333'); cell.alignment = align_center
+                elif c in [4, 5]: cell.alignment = align_left
+                else: cell.alignment = align_center
 
     ws_high = wb.create_sheet(title="High Risk Targets")
     ws_high.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
@@ -297,8 +385,6 @@ def build_advanced_excel_report():
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
         jsluice_old = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and not data.get("is_new", False))
         jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
-        
-        # 💡 [핵심 패치] 현재 타겟 도메인에서 발생한 Nuclei 탐지 건수 합산
         nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
         
         count_200 = 0
@@ -416,10 +502,9 @@ def build_advanced_excel_report():
 
             is_high_risk, reason = False, ""
             
-            # 💡 [핵심 패치] Nuclei가 잡아낸 실제 기술 스택 및 취약 노출 여부를 High Risk에 꽂아 넣음!
             if url in nuclei_findings:
                 is_high_risk = True
-                n_reasons = " / ".join(list(set(nuclei_findings[url]))) # 중복 제거
+                n_reasons = " / ".join(list(set(nuclei_findings[url])))
                 reason = f"🔥 [Nuclei 탐지] {n_reasons}"
             elif 'TruffleHog' in data["tools"]: 
                 is_high_risk, reason = True, "🔥 [Critical] TruffleHog: 소스코드 내 기밀 키(Secret) 유출 검증됨"
@@ -474,23 +559,27 @@ def build_advanced_excel_report():
             
             if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)"]: sheet.column_dimensions[col_letter].width = 80  
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
-            elif header == "탐지 사유": sheet.column_dimensions[col_letter].width = 45  
+            elif header in ["탐지 사유", "Gemini AI 지능형 헌팅 가이드 심층 분석"]: sheet.column_dimensions[col_letter].width = 55  
             elif header == "응답 상태": sheet.column_dimensions[col_letter].width = 16
-            elif header in ["🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브"]: sheet.column_dimensions[col_letter].width = 15
-            elif any(k in header for k in ["jsluice", "Nuclei", "TruffleHog", "200", "403", "500"]): sheet.column_dimensions[col_letter].width = 18
+            elif header in ["🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브", "🔮 취약점 발생 확률"]: sheet.column_dimensions[col_letter].width = 16
+            elif any(k in header for k in ["jsluice", "Nuclei", "TruffleHog", "200", "403", "500", "분류"]): sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
+    if "🔮 Gemini AI Ranking" in wb.sheetnames:
+        ws_ai = wb["🔮 Gemini AI Ranking"]
+        ws_ai.column_dimensions['D'].width = 80
+        
     wb.active = 0 
     
     report_filename = f"passive_recon_report_{now_str}.xlsx"
     wb.save(f'reports/{report_filename}')
-    print(f"[+] 텍스트 DB 기반 누적 보고서({report_filename}) 렌더링 완료!")
+    print(f"[+] 텍스트 DB 및 Gemini 3.5 Flash AI 분석 기반 보고서({report_filename}) 렌더링 완료!")
 
     postman_filename = f"postman_collection_{now_str}.json"
     with open(f'reports/{postman_filename}', 'w', encoding='utf-8') as f:
         json.dump(postman_collection, f, indent=4, ensure_ascii=False)
-    print(f"[+] Postman/Burp Suite 연동 API 명세서({postman_filename}) 사출 완료!", flush=True)
+    print(f"[+] Postman/Burp Suite 연동 명세서 사출 완료!", flush=True)
 
 if __name__ == '__main__':
     build_advanced_excel_report()
