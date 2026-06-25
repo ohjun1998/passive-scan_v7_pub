@@ -8,7 +8,6 @@ import sqlite3
 import shutil
 import asyncio
 import aiohttp
-import requests
 from datetime import datetime
 from urllib.parse import urlparse, parse_qsl
 from openpyxl import Workbook
@@ -51,7 +50,7 @@ regex_sensitive_paths = re.compile(r'/(admin|administrator|wp-admin|manage|phpmy
 regex_credential_params = re.compile(r'(?:\?|&)(api_?key|token|jwt|auth|secret|password|pwd|access_?token)=([a-zA-Z0-9\-_\.]{8,})', re.IGNORECASE)
 regex_infra_paths = re.compile(r'/\.(git|svn|hg|aws|ssh|docker)($|/)', re.IGNORECASE)
 
-# 💡 [Async 최적화] Gemini 3.5 Flash 비동기식 대량 병렬 질의 서브루틴 엔진
+# 💡 [버그 수정] Gemini 3.5 Flash 예외 처리 및 마크다운 자동 제거 로직 추가
 async def ask_gemini_async(session, gemini_key, batch):
     prompt = (
         "You are an elite Bug Bounty Hunter and Red Teamer. Analyze the following list of URLs discovered during reconnaissance.\n"
@@ -69,13 +68,36 @@ async def ask_gemini_async(session, gemini_key, batch):
         "generationConfig": {"responseMimeType": "application/json"}
     }
     try:
-        async with session.post(g_api_url, json=payload, timeout=30) as res:
+        async with session.post(g_api_url, json=payload, timeout=45) as res:
             if res.status == 200:
                 res_json = await res.json()
-                raw_reply = res_json['candidates'][0]['content']['parts'][0]['text']
-                return json.loads(raw_reply)
+                
+                # 구글 Safety Filter 검열에 의해 답변이 차단되었는지 확인
+                if 'candidates' in res_json and len(res_json['candidates']) > 0:
+                    candidate = res_json['candidates'][0]
+                    if 'content' not in candidate:
+                        print("[-] Gemini API 알림: 보안 검열 필터에 의해 일부 URL 분석이 차단되었습니다.")
+                        return []
+                    
+                    raw_reply = candidate['content']['parts'][0]['text']
+                    
+                    # AI가 불필요하게 보낸 마크다운 코드 블록을 강제로 벗겨냄
+                    raw_reply = raw_reply.strip()
+                    if raw_reply.startswith("```json"):
+                        raw_reply = raw_reply[7:]
+                    elif raw_reply.startswith("```"):
+                        raw_reply = raw_reply[3:]
+                    if raw_reply.endswith("```"):
+                        raw_reply = raw_reply[:-3]
+                        
+                    return json.loads(raw_reply.strip())
+                else:
+                    return []
+            else:
+                error_msg = await res.text()
+                print(f"[-] Gemini API HTTP Error {res.status}: {error_msg}")
     except Exception as e:
-        print(f"[-] Gemini Async Error for batch: {e}")
+        print(f"[-] Gemini Request Exception: {type(e).__name__} - {str(e)}")
     return []
 
 async def process_all_gemini(gemini_key, candidate_urls):
@@ -86,7 +108,6 @@ async def process_all_gemini(gemini_key, candidate_urls):
             batch = candidate_urls[i:i+30]
             tasks.append(ask_gemini_async(session, gemini_key, batch))
         
-        # 💡 [Async 핵심] 모든 배치를 비동기로 일괄 타격하여 결과를 취합(병목 완벽 해소)
         results = await asyncio.gather(*tasks)
         for res_list in results:
             if isinstance(res_list, list):
@@ -100,7 +121,6 @@ def build_advanced_excel_report():
 
     target_map = {get_safe_domain(t): t for t in targets}
     
-    # 💡 [SQLite 최적화] 데이터베이스 아키텍처 자동 초기화 및 동기화 세팅
     os.makedirs('reports', exist_ok=True)
     db_path = 'reports/recon_history.db'
     prev_db_path = 'previous_report/recon_history.db'
@@ -115,7 +135,6 @@ def build_advanced_excel_report():
     cursor.execute("CREATE TABLE IF NOT EXISTS historical_subdomains (subdomain TEXT PRIMARY KEY)")
     conn.commit()
 
-    # 오늘 스캔 과정에서 새로 매핑된 성공 JS 추출
     js_url_converter = {}
     today_downloaded_js = set()
     for mf in glob.glob('results/*_js_mapping.txt'):
@@ -132,7 +151,6 @@ def build_advanced_excel_report():
         cursor.executemany("INSERT OR IGNORE INTO downloaded_js (url) VALUES (?)", [(u,) for u in today_downloaded_js])
         conn.commit()
 
-    # 기정찰 서브도메인 인덱스 로드 (메모리 극소량만 소모)
     cursor.execute("SELECT subdomain FROM historical_subdomains")
     previous_subdomains = {row[0] for row in cursor.fetchall()}
 
@@ -142,7 +160,6 @@ def build_advanced_excel_report():
     junk_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.css', '.woff', '.woff2', '.ico', '.eot', '.ttf', '.mp4')
     blacklist_words = ['logout', 'signout', 'delete', 'remove', 'revoke', 'destroy']
     
-    # 오늘 새롭게 정찰 수집 툴이 뱉은 가용 URL 임시 보관소
     all_today_raw_urls = []
     temp_file_records = []
 
@@ -191,7 +208,6 @@ def build_advanced_excel_report():
                     temp_file_records.append((raw_target, abs_url, source_tool, js_file))
         except: pass
 
-    # 💡 [SQLite 최적화] 오늘 발견한 URL 목록에 대해서만 마스터 DB에서 신규 여부를 고속 집계(배치 인덱스 조회)
     existing_urls_cache = set()
     all_today_raw_urls = list(set(all_today_raw_urls))
     
@@ -202,7 +218,6 @@ def build_advanced_excel_report():
         for row in cursor.fetchall():
             existing_urls_cache.add(row[0])
 
-    # 수집 행렬 빌드
     for raw_target, abs_url, source_tool, js_file in temp_file_records:
         parsed_for_sig = urlparse(abs_url)
         query_keys = tuple(sorted([k for k, v in parse_qsl(parsed_for_sig.query, keep_blank_values=True)]))
@@ -220,7 +235,6 @@ def build_advanced_excel_report():
         if source_tool in ['LinkFinder', 'TruffleHog']:
             matrix_data[raw_target][abs_url]["files"].add(js_file)
 
-    # 응답 데이터 및 알림 데이터 정제
     status_codes = {}
     for res_file in glob.glob('results/httpx_results_*.json'):
         try:
@@ -244,9 +258,6 @@ def build_advanced_excel_report():
                         nuclei_findings[url].append(f"[{data.get('info', {}).get('severity', 'INFO').upper()}] {data.get('info', {}).get('name', 'Unknown')}")
         except: pass
 
-    # ==========================================
-    # 🔮 [Async 최적화] 비동기 추론 엔진 연동 가동
-    # ==========================================
     gemini_key = os.environ.get('GEMINI_API_KEY')
     ai_ranked_results = []
     
@@ -260,12 +271,22 @@ def build_advanced_excel_report():
                     
         candidate_urls = list(set(candidate_urls))[:300]
         if candidate_urls:
-            # 💡 비동기 루프 호출로 300개의 표적 동시 전송 분석 (순식간에 종료)
             ai_ranked_results = asyncio.run(process_all_gemini(gemini_key, candidate_urls))
             ai_ranked_results.sort(key=lambda x: x.get('probability', 0), reverse=True)
             print(f"[+] Gemini 3.5 Flash 비동기 추론 완료: {len(ai_ranked_results)}개 표적 정렬 완료.")
 
-    # 엑셀 드로잉 파트 시작
+    # 💡 [버그 수정] postman_collection 딕셔너리를 엑셀 드로잉 전에 정상적으로 초기화 선언!
+    now_str = datetime.now().strftime("%Y%m%d_%H%M")
+    
+    postman_collection = {
+        "info": {
+            "name": f"🎯 Passive Recon Master API Collection ({now_str})",
+            "description": "자동 생성된 도메인별 API 및 엔드포인트 명세서입니다. Burp Suite의 OpenAPI Parser나 Postman에 Import하여 즉시 Fuzzing에 활용하세요.",
+            "schema": "[https://schema.getpostman.com/json/collection/v2.1.0/collection.json](https://schema.getpostman.com/json/collection/v2.1.0/collection.json)"
+        },
+        "item": []
+    }
+
     wb = Workbook()
     font_header, fill_header = Font(name='Malgun Gothic', bold=True, color='FFFFFF'), PatternFill(start_color='2F3542', end_color='2F3542', fill_type='solid')
     font_data, fill_zebra = Font(name='Malgun Gothic', size=10, color='333333'), PatternFill(start_color='F8F9FA', end_color='F8F9FA', fill_type='solid')
@@ -418,9 +439,9 @@ def build_advanced_excel_report():
                     else: cell.alignment = align_center
                 high_risk_idx += 1
 
+        # 💡 [버그 수정] 포스트맨 파일 병합 위치 복구 완료!
         if postman_folder["item"]: postman_collection["item"].append(postman_folder)
 
-    # 💡 [SQLite 최적화] 어획 완료된 신규 발견된 URL 및 서브도메인을 SQLite에 트랜잭션 단위 대량 적재
     if all_today_discovered_urls:
         cursor.executemany("INSERT OR IGNORE INTO master_urls (url) VALUES (?)", [(u,) for u in list(set(all_today_discovered_urls))])
         today_subs = {urlparse(u).netloc.split(':')[0] for u in all_today_discovered_urls if urlparse(u).netloc}
@@ -429,7 +450,6 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
 
-    # 엑셀 셀 너비 자율 최적화 조절 파트
     if dash_idx > 2:
         ws_dash.append(["", "📊 총 합계 (Total)", "-"] + [f"=SUM({get_column_letter(c)}2:{get_column_letter(c)}{dash_idx-1})" for c in range(4, len(dash_headers) + 1)])
         for c in range(1, len(dash_headers) + 1):
@@ -452,8 +472,12 @@ def build_advanced_excel_report():
     if "🔮 Gemini AI Ranking" in wb.sheetnames: wb["🔮 Gemini AI Ranking"].column_dimensions['D'].width = 80
     
     wb.save(f'reports/passive_recon_report_{now_str}.xlsx')
+    
+    # 💡 [버그 수정] 드디어 정상적으로 JSON 덤프 가능!
     with open(f'reports/postman_collection_{now_str}.json', 'w', encoding='utf-8') as f:
         json.dump(postman_collection, f, indent=4, ensure_ascii=False)
+        
+    print(f"[+] Postman/Burp Suite 연동 명세서 사출 완료!", flush=True)
 
 if __name__ == '__main__':
     build_advanced_excel_report()
