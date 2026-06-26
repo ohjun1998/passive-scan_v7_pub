@@ -50,61 +50,66 @@ regex_sensitive_paths = re.compile(r'/(admin|administrator|wp-admin|manage|phpmy
 regex_credential_params = re.compile(r'(?:\?|&)(api_?key|token|jwt|auth|secret|password|pwd|access_?token)=([a-zA-Z0-9\-_\.]{8,})', re.IGNORECASE)
 regex_infra_paths = re.compile(r'/\.(git|svn|hg|aws|ssh|docker)($|/)', re.IGNORECASE)
 
-# 💡 [3.5 Flash 복구 및 안정성 패치] 최신 엔진 유지, 대기시간(120초) 연장, 마크다운 예외 처리
-async def ask_gemini_async(session, gemini_key, batch):
+# 💡 [핵심 생존 패치] Auto-Fallback 엔진 및 정규식 JSON 파서 도입
+async def ask_gemini_async(session, gemini_key, batch, use_fallback=False):
+    # 기본적으로 3.5-flash를 시도하고, 실패 시 1.5-flash로 자동 우회
+    model_name = "gemini-1.5-flash" if use_fallback else "gemini-3.5-flash"
     prompt = (
         "You are an elite Bug Bounty Hunter and Red Teamer. Analyze the following list of URLs discovered during reconnaissance.\n"
         "Evaluate the probability (0 to 100) that each URL contains a security vulnerability (such as IDOR, SSRF, SQLi, Privilege Escalation, Command Injection, or Sensitive Information Disclosure) based on its paths, parameters, and naming conventions.\n"
-        "Return EXACTLY a JSON array of objects, with no markdown formatting, no backticks. Each object must contain these keys:\n"
+        "Return EXACTLY a JSON array of objects, with no markdown formatting, no backticks, no conversational text. Each object must contain these keys:\n"
         "- 'url': the exact URL string\n"
         "- 'probability': integer from 0 to 100\n"
         "- 'vuln_type': string of suspected vulnerability type\n"
         "- 'reason': short clear explanation in Korean of why this URL is high risk and how to test it.\n\n"
         f"URLs:\n{json.dumps(batch)}"
     )
-    # Gemini 3.5 Flash 엔진 유지!
-    g_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_key}"
+    g_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"}
     }
     
     try:
-        # AI가 고민할 수 있는 넉넉한 시간(120초) 부여
         async with session.post(g_api_url, json=payload, timeout=120) as res:
             if res.status == 200:
                 res_json = await res.json()
                 if 'candidates' in res_json and len(res_json['candidates']) > 0:
                     candidate = res_json['candidates'][0]
                     if 'content' not in candidate:
-                        print("[-] Gemini API 알림: 보안 검열 필터에 의해 일부 URL 분석이 차단되었습니다.")
                         return []
                     
                     raw_reply = candidate['content']['parts'][0]['text']
                     
-                    # 마크다운 자동 제거기 (3.5 Flash의 불필요한 포맷팅 방어)
-                    raw_reply = raw_reply.strip()
-                    if raw_reply.startswith("```json"):
-                        raw_reply = raw_reply[7:]
-                    elif raw_reply.startswith("```"):
-                        raw_reply = raw_reply[3:]
-                    if raw_reply.endswith("```"):
-                        raw_reply = raw_reply[:-3]
-                        
-                    return json.loads(raw_reply.strip())
+                    # 지능형 정규식 파서: AI가 어떤 잡담을 섞어 보내도 순수 JSON 배열만 핀셋 추출
+                    json_match = re.search(r'\[\s*\{.*?\}\s*\]', raw_reply, re.DOTALL)
+                    if json_match:
+                        try:
+                            return json.loads(json_match.group(0))
+                        except Exception:
+                            pass
+                            
+                    # 정규식 실패 시 기본 로드 시도
+                    try:
+                        return json.loads(raw_reply)
+                    except Exception:
+                        return []
                 else:
                     return []
+            
+            # 💡 [Auto-Fallback] 3.5 모델 접근 불가(404) 시 1.5 모델로 자동 전환 재시도
+            elif res.status == 404 and not use_fallback:
+                print(f"[-] {model_name} 모델 통신 불가(404). 안정적인 1.5-flash 모델로 자동 폴백(Auto-Fallback)을 시도합니다...")
+                return await ask_gemini_async(session, gemini_key, batch, use_fallback=True)
             else:
                 error_msg = await res.text()
-                print(f"[-] Gemini 3.5 Flash API HTTP Error {res.status}: {error_msg}")
+                print(f"[-] Gemini API HTTP Error {res.status} ({model_name}): {error_msg}")
                 return []
                 
     except asyncio.TimeoutError:
-        print("[-] Gemini API 알림: AI 응답 시간 초과 (Timeout 120s).")
-    except json.JSONDecodeError:
-        print("[-] Gemini API 알림: AI가 JSON 형식을 지키지 않았습니다.")
+        print(f"[-] Gemini API 타임아웃 발생 ({model_name}).")
     except Exception as e:
-        print(f"[-] Gemini Request Exception: {type(e).__name__} - {str(e)}")
+        print(f"[-] Gemini Request Exception ({model_name}): {type(e).__name__} - {str(e)}")
         
     return []
 
@@ -112,7 +117,6 @@ async def process_all_gemini(gemini_key, candidate_urls):
     ai_ranked_results = []
     async with aiohttp.ClientSession() as session:
         tasks = []
-        # AI의 과부하 방지 및 정밀도 향상을 위해 배치를 15개로 축소
         for i in range(0, len(candidate_urls), 15):
             batch = candidate_urls[i:i+15]
             tasks.append(ask_gemini_async(session, gemini_key, batch))
@@ -275,14 +279,16 @@ def build_advanced_excel_report():
         for url_map in matrix_data.values():
             for url, data in url_map.items():
                 sc = str(status_codes.get(url, 'Dead'))
-                if url in nuclei_findings or 'TruffleHog' in data["tools"] or sc in ['200', '403', '401'] or '?' in url:
+                # AI에 던질 타겟 폭을 넓힘 (파라미터가 있거나, 살아있는 거의 모든 응답 코드 포함)
+                if url in nuclei_findings or 'TruffleHog' in data["tools"] or sc in ['200', '301', '302', '401', '403', '500'] or '?' in url:
                     candidate_urls.append(url)
                     
         candidate_urls = list(set(candidate_urls))[:300]
         if candidate_urls:
+            print(f"[+] 총 {len(candidate_urls)}개의 핵심 엔드포인트를 식별하여 Gemini AI에 추론을 요청합니다...")
             ai_ranked_results = asyncio.run(process_all_gemini(gemini_key, candidate_urls))
             ai_ranked_results.sort(key=lambda x: x.get('probability', 0), reverse=True)
-            print(f"[+] Gemini 3.5 Flash 비동기 추론 완료: {len(ai_ranked_results)}개 표적 정렬 완료.")
+            print(f"[+] Gemini 비동기 추론 완료: {len(ai_ranked_results)}개 표적 정렬 완료.")
 
     now_str = datetime.now().strftime("%Y%m%d_%H%M")
     
@@ -290,7 +296,7 @@ def build_advanced_excel_report():
         "info": {
             "name": f"🎯 Passive Recon Master API Collection ({now_str})",
             "description": "자동 생성된 도메인별 API 및 엔드포인트 명세서입니다. Burp Suite의 OpenAPI Parser나 Postman에 Import하여 즉시 Fuzzing에 활용하세요.",
-            "schema": "[https://schema.getpostman.com/json/collection/v2.1.0/collection.json](https://schema.getpostman.com/json/collection/v2.1.0/collection.json)"
+            "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
         },
         "item": []
     }
