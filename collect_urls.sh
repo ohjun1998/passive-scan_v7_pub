@@ -37,8 +37,17 @@ collect_master() {
     grep -iE "$regex" "results/${safe_domain}_gau.txt" | sort -u -o "results/${safe_domain}_gau.txt"
     grep -iE "$regex" "results/${safe_domain}_waybackurls.txt" | sort -u -o "results/${safe_domain}_waybackurls.txt"
 
-    # JS 파일만 추출
-    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" 2>/dev/null | grep -E '\.js($|\?)' 2>/dev/null | sort -u > "results/${safe_domain}_js_raw_list.txt"
+    echo "[+] [${raw_domain}] 🕷️ Katana 지능형 크롤링 준비 (uro 트래픽 최적화)..."
+    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" 2>/dev/null | sort -u > "results/${safe_domain}_raw_seed.txt"
+    uro -i "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_clean_seed.txt"
+
+    echo "  -> [Katana] 정제된 시드(Seed) 기반 Depth 1 크롤링 시작..."
+    katana -list "results/${safe_domain}_clean_seed.txt" -d 1 -jc -kf all -rl 20 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
+    grep -iE "$regex" "results/${safe_domain}_katana.txt" | sort -u -o "results/${safe_domain}_katana.txt"
+    rm -f "results/${safe_domain}_raw_seed.txt" "results/${safe_domain}_clean_seed.txt"
+
+    # JS 파일만 추출 (Katana 결과물도 포함)
+    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" "results/${safe_domain}_katana.txt" 2>/dev/null | grep -E '\.js($|\?)' 2>/dev/null | sort -u > "results/${safe_domain}_js_raw_list.txt"
     
     # URL을 절대 경로로 모두 변환
     > "results/${safe_domain}_js_master_list.txt"
@@ -70,7 +79,6 @@ collect_master() {
             mkdir -p "$download_dir"
             rm -f "results/${safe_domain}_js_mapping.txt"
 
-            # 💡 [핵심 패치] 1000개로 자르지 않고, 전체 신규 리스트를 무작위로 섞기만 합니다.
             shuf "results/${safe_domain}_js_new_list.txt" > "results/${safe_domain}_js_urls_target.txt"
             
             local MAX_SUCCESS=1000
@@ -85,7 +93,6 @@ collect_master() {
                 ((attempt_cnt++))
                 local safe_name=$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-150).js
                 
-                # 타임아웃 4초 내에 다운로드 성공 시에만 카운트 증가
                 if curl -s -L --connect-timeout 2 --max-time 4 --fail \
                      -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
                      "$url" -o "$download_dir/$safe_name"; then
@@ -94,13 +101,11 @@ collect_master() {
                     echo "    [✓] (성공: ${success_cnt}/${MAX_SUCCESS}) 타겟 다운로드 완료"
                     echo -e "${safe_name}\t${url}" >> "results/${safe_domain}_js_mapping.txt"
                     
-                    # 💡 성공 횟수가 1000개(MAX_SUCCESS)에 도달하면 그 즉시 다운로드 루프를 강제 종료합니다.
                     if [ "$success_cnt" -ge "$MAX_SUCCESS" ]; then
                         echo "    [*] 목표 다운로드 수치(${MAX_SUCCESS}개) 달성! 스텔스 모드 종료."
                         break
                     fi
                 else
-                    # 실패 시 success_cnt는 그대로 두고 실패 건수만 올리며 다음 URL로 넘어갑니다.
                     ((fail_cnt++))
                     echo "    [✗] (실패 누적: ${fail_cnt}개) 연결 거부됨 - 다른 파일로 대체합니다."
                 fi
