@@ -50,7 +50,6 @@ regex_sensitive_paths = re.compile(r'/(admin|administrator|wp-admin|manage|phpmy
 regex_credential_params = re.compile(r'(?:\?|&)(api_?key|token|jwt|auth|secret|password|pwd|access_?token)=([a-zA-Z0-9\-_\.]{8,})', re.IGNORECASE)
 regex_infra_paths = re.compile(r'/\.(git|svn|hg|aws|ssh|docker)($|/)', re.IGNORECASE)
 
-# 💡 [핵심 패치 1] API 키 계정에 열려있는 최적의 모델을 스스로 찾아내는 스캐너 엔진
 def get_best_gemini_model(api_key):
     print("[*] 현재 API 키로 사용 가능한 최적의 Gemini AI 모델을 동적으로 탐색합니다...", flush=True)
     try:
@@ -58,16 +57,13 @@ def get_best_gemini_model(api_key):
         res = requests.get(url, timeout=15)
         if res.status_code == 200:
             models = res.json().get('models', [])
-            # 텍스트 생성이 지원되는 모델만 필터링
             valid_models = [m['name'] for m in models if 'generateContent' in m.get('supportedGenerationMethods', [])]
             
-            # 해킹 분석에 가장 빠르고 적합한 모델 우선순위
             priorities = [
                 'models/gemini-1.5-flash-latest', 
+                'models/gemini-2.5-flash',
                 'models/gemini-1.5-flash', 
-                'models/gemini-1.5-pro-latest',
-                'models/gemini-pro',
-                'models/gemini-1.0-pro'
+                'models/gemini-pro'
             ]
             
             for p in priorities:
@@ -83,10 +79,10 @@ def get_best_gemini_model(api_key):
     except Exception as e:
         print(f"[-] 모델 동적 탐색 실패: {e}")
     
-    print("[!] 탐색 실패. 강제로 gemini-1.5-flash-latest 모델로 돌파합니다.")
-    return "gemini-1.5-flash-latest"
+    print("[!] 탐색 실패. 강제로 gemini-1.5-flash 모델로 돌파합니다.")
+    return "gemini-1.5-flash"
 
-# 💡 [핵심 패치 2] 동적 스캔된 모델명을 주입받아 타격하는 로직으로 변경
+# 💡 [핵심 패치 1] 타임아웃 150초 증가 및 3번의 자동 재시도(불사조) 로직 탑재
 async def ask_gemini_async(session, gemini_key, batch, model_name):
     prompt = (
         "You are an elite Bug Bounty Hunter and Red Teamer. Analyze the following list of URLs discovered during reconnaissance.\n"
@@ -104,52 +100,65 @@ async def ask_gemini_async(session, gemini_key, batch, model_name):
         "generationConfig": {"responseMimeType": "application/json"}
     }
     
-    try:
-        async with session.post(g_api_url, json=payload, timeout=60) as res:
-            if res.status == 200:
-                res_json = await res.json()
-                raw_reply = res_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+    # 통신 대기 시간을 150초로 대폭 늘려서 AI가 답변을 작성할 충분한 시간을 줍니다.
+    timeout = aiohttp.ClientTimeout(total=150)
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            async with session.post(g_api_url, json=payload, timeout=timeout) as res:
+                if res.status == 200:
+                    res_json = await res.json()
+                    raw_reply = res_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                    
+                    if not raw_reply: return []
+                        
+                    match = re.search(r'\[\s*\{.*?\}\s*\]', raw_reply, re.DOTALL)
+                    if match:
+                        try: return json.loads(match.group(0))
+                        except: pass
+                    
+                    try: return json.loads(raw_reply.strip())
+                    except: return []
                 
-                if not raw_reply:
+                elif res.status == 429:
+                    print(f"[-] API 트래픽 제한(429). 10초 대기 후 재시도... ({attempt+1}/{max_retries})")
+                    await asyncio.sleep(10)
+                    continue
+                else:
+                    error_msg = await res.text()
+                    print(f"[-] Gemini API 통신 에러 ({res.status}): {error_msg}")
                     return []
                     
-                match = re.search(r'\[\s*\{.*?\}\s*\]', raw_reply, re.DOTALL)
-                if match:
-                    try:
-                        return json.loads(match.group(0))
-                    except:
-                        pass
-                
-                try:
-                    return json.loads(raw_reply.strip())
-                except:
-                    return []
+        except asyncio.TimeoutError:
+            if attempt < max_retries - 1:
+                print(f"[-] API 타임아웃. 재시도 중... ({attempt+1}/{max_retries})")
+                await asyncio.sleep(3)
+                continue
             else:
-                error_msg = await res.text()
-                print(f"[-] Gemini API 통신 에러 ({res.status}): {error_msg}")
-                return []
-                
-    except asyncio.TimeoutError:
-        print(f"[-] Gemini API 타임아웃 발생 ({model_name}).")
-    except Exception as e:
-        print(f"[-] Gemini 요청 실패: {str(e)}")
-        
+                print("[-] Gemini API 최종 타임아웃 발생.")
+        except Exception as e:
+            print(f"[-] Gemini 요청 실패: {str(e)}")
+            return []
+            
     return []
 
+# 💡 [핵심 패치 2] 한 번에 보내는 타겟을 30개 -> 10개로 축소 (소화불량 방지)
 async def process_all_gemini(gemini_key, candidate_urls, model_name):
     ai_ranked_results = []
     async with aiohttp.ClientSession() as session:
-        for i in range(0, len(candidate_urls), 30):
-            batch = candidate_urls[i:i+30]
-            print(f"[*] Gemini AI 지능형 분석 진행 중... ({i+1} ~ {min(i+30, len(candidate_urls))} / {len(candidate_urls)})")
+        # 배치를 10개로 잘게 쪼개어 속도와 안정성을 동시에 잡습니다.
+        for i in range(0, len(candidate_urls), 10):
+            batch = candidate_urls[i:i+10]
+            print(f"[*] Gemini AI 지능형 분석 진행 중... ({i+1} ~ {min(i+10, len(candidate_urls))} / {len(candidate_urls)})")
             
             res_list = await ask_gemini_async(session, gemini_key, batch, model_name)
             if isinstance(res_list, list):
                 ai_ranked_results.extend(res_list)
             
-            # API 호출 과부하 방지 (1분당 요청 횟수 조절)
-            if i + 30 < len(candidate_urls):
-                await asyncio.sleep(4)
+            # 다음 묶음을 보내기 전 3초 휴식
+            if i + 10 < len(candidate_urls):
+                await asyncio.sleep(3)
                 
     return ai_ranked_results
 
@@ -310,7 +319,6 @@ def build_advanced_excel_report():
                     
         candidate_urls = list(set(candidate_urls))[:300]
         if candidate_urls:
-            # 💡 [핵심 패치 3] 동적으로 찾아낸 최적의 모델명 주입
             selected_model = get_best_gemini_model(gemini_key)
             print(f"[+] 총 {len(candidate_urls)}개의 핵심 엔드포인트를 식별하여 AI 추론을 요청합니다...")
             ai_ranked_results = asyncio.run(process_all_gemini(gemini_key, candidate_urls, selected_model))
