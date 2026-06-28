@@ -36,6 +36,15 @@ def get_status_color(status):
     if 'Legacy' in status_str: return '6C757D'
     return '6C757D'
 
+def get_status_priority(status):
+    s = str(status)
+    if s.startswith('2'): return 1
+    if s.startswith('5'): return 2
+    if s in ['401', '403']: return 3
+    if s.startswith('3'): return 4
+    if s.startswith('4'): return 5
+    return 6
+
 def get_safe_domain(target):
     return "wild_" + target[2:] if target.startswith('*.') else target
 
@@ -344,10 +353,11 @@ def build_advanced_excel_report():
 
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
-    # 💡 [대시보드 패치] Jsluice 누적/신규, Katana 누적/신규 컬럼 추가 적용
+    
+    # 💡 [핵심 패치] 헤더 칸 통합 (누적/신규 분리 ➡️ 한 칸에 표시)
     dash_headers = [
-        "No", "타겟 도메인", "🌟 신규 서브", "엑셀 누적 URL", "🔥 신규 발견", 
-        "jsluice (누적)", "🔥 jsluice (신규)", "Katana (누적)", "🔥 Katana (신규)", 
+        "No", "타겟 도메인", "🌟 신규 서브", "📊 누적 / 🔥 신규 URL", 
+        "jsluice (누적 / 신규)", "Katana (누적 / 신규)", 
         "🔥 Nuclei 탐지", "TruffleHog 탐지", 
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
@@ -394,8 +404,13 @@ def build_advanced_excel_report():
     ws_high.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "도메인", "고위험 경로 (Endpoint)", "탐지 사유"]) 
     for c in range(1, 10): ws_high.cell(2, c).font = font_header; ws_high.cell(2, c).fill = fill_header; ws_high.cell(2, c).alignment = align_center; ws_high.cell(2, c).border = thin_border
 
-    dash_idx, high_risk_idx = 2, 3
+    dash_idx = 2
     all_today_discovered_urls = []
+    high_risk_records = []
+    
+    # 💡 하단 SUM을 위한 글로벌 총계 변수들
+    t_passive = t_domain_new = t_js_tot = t_js_new = t_ka_tot = t_ka_new = 0
+    t_nuc = t_truf = t_200 = t_40x = t_50x = 0
 
     for raw_target, url_map in matrix_data.items():
         if not url_map: continue
@@ -407,7 +422,6 @@ def build_advanced_excel_report():
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
         nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
 
-        # 💡 [로직 패치] Jsluice와 Katana의 전체 누적 개수와 오늘자 신규 개수 분리 계산
         jsluice_total = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
         jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
         
@@ -426,8 +440,33 @@ def build_advanced_excel_report():
         new_subdomains = current_subdomains - previous_subdomains
         sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains)) else "-"
         
-        # 💡 [데이터 주입 패치] 새로운 열 구조에 맞게 변수 매핑
-        ws_dash.append([dash_idx - 1, escape_formula(raw_target), sub_dash_mark, passive_count, domain_new_count, jsluice_total, jsluice_new, katana_total, katana_new, nuclei_count, trufflehog_count, count_200, count_40x, count_50x])
+        # 글로벌 합계 누적
+        t_passive += passive_count
+        t_domain_new += domain_new_count
+        t_js_tot += jsluice_total
+        t_js_new += jsluice_new
+        t_ka_tot += katana_total
+        t_ka_new += katana_new
+        t_nuc += nuclei_count
+        t_truf += trufflehog_count
+        t_200 += count_200
+        t_40x += count_40x
+        t_50x += count_50x
+        
+        # 💡 [데이터 주입 패치] "누적 / 신규" 문자열 형태로 한 셀에 합쳐서 병합
+        ws_dash.append([
+            dash_idx - 1, 
+            escape_formula(raw_target), 
+            sub_dash_mark, 
+            f"{passive_count} / {domain_new_count}", 
+            f"{jsluice_total} / {jsluice_new}", 
+            f"{katana_total} / {katana_new}", 
+            nuclei_count, 
+            trufflehog_count, 
+            count_200, 
+            count_40x, 
+            count_50x
+        ])
         
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
@@ -435,9 +474,11 @@ def build_advanced_excel_report():
             if c == 2: cell.hyperlink = f"#'{sheet_title}'!A1"; cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
             elif c == 3 and sub_dash_mark == "🌟 신규": cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
-            # 💡 5(전체신규), 7(jsluice신규), 9(Katana신규), 10(Nuclei), 11(TruffleHog) 항목에 숫자가 잡히면 핑크색 하이라이트 처리
-            if c in [5, 7, 9, 10, 11] and isinstance(cell.value, int) and cell.value > 0: 
-                cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            # 💡 하이라이트 로직 갱신: 병합된 열에서도 신규 값이 있으면 전체 셀을 핑크색으로 표시
+            if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            elif c == 6 and katana_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            elif c in [7, 8] and isinstance(cell.value, int) and cell.value > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
         dash_idx += 1
 
         ws = wb.create_sheet(title=sheet_title)
@@ -450,7 +491,12 @@ def build_advanced_excel_report():
         ws.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "타겟 절대 경로 (URL)"])
         for c in range(1, 8): ws.cell(2, c).font = font_header; ws.cell(2, c).fill = fill_header; ws.cell(2, c).alignment = align_center; ws.cell(2, c).border = thin_border
 
-        sorted_urls = sorted(url_map.items(), key=lambda x: (not x[1].get("is_new", False), x[0]))
+        sorted_urls = sorted(url_map.items(), key=lambda x: (
+            not x[1].get("is_new", False), 
+            get_status_priority(status_codes.get(x[0], 'Dead') if any(b not in x[0].lower() for b in blacklist_words) else 'Skipped(위험)'), 
+            x[0]
+        ))
+        
         for sub_idx, (url, data) in enumerate(sorted_urls, 1):
             if sub_idx > 1048500: break
             tools_str, files_str = ", ".join(sorted(list(data["tools"]))), ", ".join(sorted(list(data["files"]))) if data["files"] else "-"
@@ -488,19 +534,35 @@ def build_advanced_excel_report():
                 elif regex_credential_params.search(urlparse(url).query): is_high_risk, reason = True, "🚨 [Param] 파라미터 내 평문 인증 토큰 포착"
 
             if is_high_risk:
-                ws_high.append([high_risk_idx - 2, is_new_mark, sub_mark, escape_formula(tools_str), escape_formula(files_str), current_status, escape_formula(raw_target), escape_formula(url), escape_formula(reason)])
-                for c in range(1, 10):
-                    cell = ws_high.cell(high_risk_idx, c)
-                    cell.font = font_data; cell.border = thin_border
-                    if (high_risk_idx % 2) == 1: cell.fill = fill_zebra
-                    if c == 2 and data.get("is_new", False): cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                    if c == 3 and is_new_subdomain: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                    if c == 6: cell.fill = PatternFill(start_color=get_status_color(current_status), end_color=get_status_color(current_status), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
-                    elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
-                    else: cell.alignment = align_center
-                high_risk_idx += 1
+                high_risk_records.append({
+                    "is_new_mark": is_new_mark,
+                    "sub_mark": sub_mark,
+                    "tools_str": tools_str,
+                    "files_str": files_str,
+                    "current_status": current_status,
+                    "raw_target": raw_target,
+                    "url": url,
+                    "reason": reason,
+                    "is_new": data.get("is_new", False),
+                    "is_new_sub": is_new_subdomain,
+                    "priority": get_status_priority(current_status)
+                })
 
-        if postman_folder["item"]: postman_collection["item"].append(postman_folder)
+    high_risk_records.sort(key=lambda x: (not x["is_new"], x["priority"], x["raw_target"], x["url"]))
+    high_risk_idx = 3
+    
+    for hr in high_risk_records:
+        ws_high.append([high_risk_idx - 2, hr["is_new_mark"], hr["sub_mark"], escape_formula(hr["tools_str"]), escape_formula(hr["files_str"]), hr["current_status"], escape_formula(hr["raw_target"]), escape_formula(hr["url"]), escape_formula(hr["reason"])])
+        for c in range(1, 10):
+            cell = ws_high.cell(high_risk_idx, c)
+            cell.font = font_data; cell.border = thin_border
+            if (high_risk_idx % 2) == 1: cell.fill = fill_zebra
+            if c == 2 and hr["is_new"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            if c == 3 and hr["is_new_sub"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            if c == 6: cell.fill = PatternFill(start_color=get_status_color(hr["current_status"]), end_color=get_status_color(hr["current_status"]), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
+            elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
+            else: cell.alignment = align_center
+        high_risk_idx += 1
 
     if all_today_discovered_urls:
         cursor.executemany("INSERT OR IGNORE INTO master_urls (url) VALUES (?)", [(u,) for u in list(set(all_today_discovered_urls))])
@@ -510,9 +572,15 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
 
-    # 💡 엑셀 하단 SUM 수식 동적 맵핑 (14번째 열까지 반영되도록 자동화)
+    # 💡 [하단 SUM 로직 패치] 텍스트가 된 열도 총계가 정상 출력되도록 수동 변수 주입
     if dash_idx > 2:
-        ws_dash.append(["", "📊 총 합계 (Total)", "-"] + [f"=SUM({get_column_letter(c)}2:{get_column_letter(c)}{dash_idx-1})" for c in range(4, len(dash_headers) + 1)])
+        ws_dash.append([
+            "", "📊 총 합계 (Total)", "-", 
+            f"{t_passive} / {t_domain_new}", 
+            f"{t_js_tot} / {t_js_new}", 
+            f"{t_ka_tot} / {t_ka_new}", 
+            t_nuc, t_truf, t_200, t_40x, t_50x
+        ])
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF'); cell.fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
@@ -526,6 +594,8 @@ def build_advanced_excel_report():
             if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)"]: sheet.column_dimensions[col_letter].width = 80  
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header in ["탐지 사유", "Gemini AI 지능형 헌팅 가이드 심층 분석"]: sheet.column_dimensions[col_letter].width = 55  
+            # 💡 [컬럼 너비 패치] 글자가 합쳐져 길어진 칸은 잘리지 않도록 너비를 더 넓게(22) 잡아줍니다
+            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "Katana (누적 / 신규)"]: sheet.column_dimensions[col_letter].width = 22
             elif header in ["응답 상태", "🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브", "🔮 취약점 발생 확률"]: sheet.column_dimensions[col_letter].width = 16
             else: sheet.column_dimensions[col_letter].width = 18
 
