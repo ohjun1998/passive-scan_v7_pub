@@ -23,7 +23,7 @@ collect_master() {
         echo "$base_domain" >> "results/${safe_domain}_subs.txt"
         sort -u "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt"
         
-        # 💡 [방어 1] 서브도메인이 너무 많으면 OOM 발생하므로 1000개로 컷트
+        # 💡 [방어 1] 서브도메인이 너무 많으면 메모리가 터지므로 1000개로 컷트
         shuf -n 1000 "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt" 2>/dev/null || true
         
         cat "results/${safe_domain}_subs.txt" | timeout 5m gau > "results/${safe_domain}_gau.txt" 2>/dev/null
@@ -47,14 +47,14 @@ collect_master() {
     # 💡 [방어 3] Katana는 무거우므로 300개만 샘플링하여 크롤링
     shuf -n 300 "results/${safe_domain}_clean_seed.txt" > "results/${safe_domain}_katana_seed.txt" 2>/dev/null || cp "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
 
-    echo "  -> [Katana] Depth 1 크롤링 시작 (최대 5분 타임아웃)..."
-    # 💡 [방어 4] 스레드(-c)를 2로 제한하고 타임아웃 5분 강제 적용
-    timeout 5m katana -list "results/${safe_domain}_katana_seed.txt" -d 1 -jc -kf all -c 2 -rl 50 -ct 10 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
+    # 🔥 [요청 사항 적용] Katana Depth를 -d 3 으로 수정!
+    echo "  -> [Katana] Depth 3 크롤링 시작 (최대 15분 타임아웃)..."
+    timeout 15m katana -list "results/${safe_domain}_katana_seed.txt" -d 3 -jc -kf all -c 2 -rl 50 -ct 10 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
     grep -iE "$regex" "results/${safe_domain}_katana.txt" | sort -u -o "results/${safe_domain}_katana.txt"
     
     rm -f "results/${safe_domain}_raw_seed.txt" "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
 
-    # JS 파일 추출
+    # JS 파일 추출 (Katana가 찾은 JS도 모두 포함)
     cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" "results/${safe_domain}_katana.txt" 2>/dev/null | grep -E '\.js($|\?)' 2>/dev/null | sort -u > "results/${safe_domain}_js_raw_list.txt"
     
     > "results/${safe_domain}_js_master_list.txt"
@@ -88,7 +88,7 @@ collect_master() {
 
             shuf "results/${safe_domain}_js_new_list.txt" > "results/${safe_domain}_js_urls_target.txt"
             
-            # 💡 [방어 5] 다운로드 한도를 100개로 축소하여 6시간 제한 무조건 회피
+            # 💡 [방어 4] 다운로드 한도를 100개로 축소하여 6시간 제한 무조건 회피
             local MAX_SUCCESS=100
             local success_cnt=0
             local fail_cnt=0
@@ -114,7 +114,7 @@ collect_master() {
 }
 
 export -f collect_master
-# 💡 [핵심 방어 6] 가상머신 터짐(OOM) 방지를 위해 동시 실행 프로세스를 2개로 고정
+# 💡 [방어 5] 가상머신 터짐(OOM) 방지를 위해 동시 실행 프로세스를 2개로 고정
 xargs -P 2 -n 1 -a "$TARGET_FILE" -I {} bash -c 'collect_master "{}"'
 
 rm -f targets_group*
