@@ -208,7 +208,6 @@ def build_advanced_excel_report():
 
     for file_path in glob.glob('results/*.*'):
         filename = os.path.basename(file_path).lower()
-        # 💡 [핵심 패치 3] Katana 도구 인식 정규식 추가
         match = re.match(r'^(.*)_(linkfinder|trufflehog|gau|waybackurls|katana)\.txt$', filename)
         if not match: continue
         
@@ -345,9 +344,11 @@ def build_advanced_excel_report():
 
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
+    # 💡 [대시보드 패치] Jsluice 누적/신규, Katana 누적/신규 컬럼 추가 적용
     dash_headers = [
         "No", "타겟 도메인", "🌟 신규 서브", "엑셀 누적 URL", "🔥 신규 발견", 
-        "jsluice (기존)", "🔥 jsluice (신규)", "🔥 Nuclei 탐지", "TruffleHog 탐지", 
+        "jsluice (누적)", "🔥 jsluice (신규)", "Katana (누적)", "🔥 Katana (신규)", 
+        "🔥 Nuclei 탐지", "TruffleHog 탐지", 
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
     ws_dash.append(dash_headers)
@@ -404,9 +405,14 @@ def build_advanced_excel_report():
         passive_count = len(url_map)
         domain_new_count = sum(1 for data in url_map.values() if data.get("is_new", False))
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
-        jsluice_old = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and not data.get("is_new", False))
-        jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
         nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
+
+        # 💡 [로직 패치] Jsluice와 Katana의 전체 누적 개수와 오늘자 신규 개수 분리 계산
+        jsluice_total = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
+        jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
+        
+        katana_total = sum(1 for data in url_map.values() if 'Katana' in data["tools"])
+        katana_new = sum(1 for data in url_map.values() if 'Katana' in data["tools"] and data.get("is_new", False))
         
         count_200 = count_40x = count_50x = 0
         for url in url_map.keys():
@@ -420,13 +426,18 @@ def build_advanced_excel_report():
         new_subdomains = current_subdomains - previous_subdomains
         sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains)) else "-"
         
-        ws_dash.append([dash_idx - 1, escape_formula(raw_target), sub_dash_mark, passive_count, domain_new_count, jsluice_old, jsluice_new, nuclei_count, trufflehog_count, count_200, count_40x, count_50x])
+        # 💡 [데이터 주입 패치] 새로운 열 구조에 맞게 변수 매핑
+        ws_dash.append([dash_idx - 1, escape_formula(raw_target), sub_dash_mark, passive_count, domain_new_count, jsluice_total, jsluice_new, katana_total, katana_new, nuclei_count, trufflehog_count, count_200, count_40x, count_50x])
+        
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = font_data; cell.border = thin_border
             if c == 2: cell.hyperlink = f"#'{sheet_title}'!A1"; cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
             elif c == 3 and sub_dash_mark == "🌟 신규": cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-            if c in [7, 8] and cell.value and cell.value > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            
+            # 💡 5(전체신규), 7(jsluice신규), 9(Katana신규), 10(Nuclei), 11(TruffleHog) 항목에 숫자가 잡히면 핑크색 하이라이트 처리
+            if c in [5, 7, 9, 10, 11] and isinstance(cell.value, int) and cell.value > 0: 
+                cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
         dash_idx += 1
 
         ws = wb.create_sheet(title=sheet_title)
@@ -499,6 +510,7 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
 
+    # 💡 엑셀 하단 SUM 수식 동적 맵핑 (14번째 열까지 반영되도록 자동화)
     if dash_idx > 2:
         ws_dash.append(["", "📊 총 합계 (Total)", "-"] + [f"=SUM({get_column_letter(c)}2:{get_column_letter(c)}{dash_idx-1})" for c in range(4, len(dash_headers) + 1)])
         for c in range(1, len(dash_headers) + 1):
