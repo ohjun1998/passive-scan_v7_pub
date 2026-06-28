@@ -185,6 +185,14 @@ def build_advanced_excel_report():
     cursor.execute("CREATE TABLE IF NOT EXISTS master_urls (url TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS downloaded_js (url TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS historical_subdomains (subdomain TEXT PRIMARY KEY)")
+    
+    # 💡 [핵심 패치 1] 영구적으로 깎이지 않는 '진짜 누적' 데이터를 보관하는 테이블 신설
+    cursor.execute('''CREATE TABLE IF NOT EXISTS target_stats (
+        target TEXT PRIMARY KEY,
+        passive_tot INTEGER DEFAULT 0,
+        jsluice_tot INTEGER DEFAULT 0,
+        katana_tot INTEGER DEFAULT 0
+    )''')
     conn.commit()
 
     js_url_converter = {}
@@ -354,7 +362,6 @@ def build_advanced_excel_report():
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     
-    # 💡 [핵심 패치] 헤더 칸 통합 (누적/신규 분리 ➡️ 한 칸에 표시)
     dash_headers = [
         "No", "타겟 도메인", "🌟 신규 서브", "📊 누적 / 🔥 신규 URL", 
         "jsluice (누적 / 신규)", "Katana (누적 / 신규)", 
@@ -408,26 +415,51 @@ def build_advanced_excel_report():
     all_today_discovered_urls = []
     high_risk_records = []
     
-    # 💡 하단 SUM을 위한 글로벌 총계 변수들
-    t_passive = t_domain_new = t_js_tot = t_js_new = t_ka_tot = t_ka_new = 0
-    t_nuc = t_truf = t_200 = t_40x = t_50x = 0
+    # 💡 [핵심 패치 2] 글로벌 총계 합계를 위한 파이썬 내부 변수 (엑셀 SUM 에러 방어)
+    g_passive_tot = g_passive_new = 0
+    g_jsluice_tot = g_jsluice_new = 0
+    g_katana_tot = g_katana_new = 0
+    g_nuc = g_truf = g_200 = g_40x = g_50x = 0
 
     for raw_target, url_map in matrix_data.items():
         if not url_map: continue
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
         
         postman_folder = {"name": raw_target, "item": []}
-        passive_count = len(url_map)
+        
+        # 오늘 발견한 전체 개수 및 신규 개수 파악
+        today_passive_count = len(url_map)
         domain_new_count = sum(1 for data in url_map.values() if data.get("is_new", False))
+        
+        today_jsluice_total = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
+        jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
+        
+        today_katana_total = sum(1 for data in url_map.values() if 'Katana' in data["tools"])
+        katana_new = sum(1 for data in url_map.values() if 'Katana' in data["tools"] and data.get("is_new", False))
+        
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
         nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
 
-        jsluice_total = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
-        jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
+        # 💡 [핵심 패치 3] SQLite DB에서 진짜 누적 데이터를 불러오고 업데이트
+        cursor.execute("SELECT passive_tot, jsluice_tot, katana_tot FROM target_stats WHERE target = ?", (raw_target,))
+        row = cursor.fetchone()
         
-        katana_total = sum(1 for data in url_map.values() if 'Katana' in data["tools"])
-        katana_new = sum(1 for data in url_map.values() if 'Katana' in data["tools"] and data.get("is_new", False))
-        
+        if row:
+            db_passive_tot, db_jsluice_tot, db_katana_tot = row
+            # 기존 누적 데이터에 '오늘 발견한 신규 개수'를 무조건 더해서 업데이트!
+            new_passive_tot = db_passive_tot + domain_new_count
+            new_jsluice_tot = db_jsluice_tot + jsluice_new
+            new_katana_tot = db_katana_tot + katana_new
+        else:
+            # 처음 스캔하는 도메인이면 오늘 발견한 총량을 누적의 베이스라인으로 삼음
+            new_passive_tot = today_passive_count
+            new_jsluice_tot = today_jsluice_total
+            new_katana_tot = today_katana_total
+            
+        # 업데이트된 진짜 누적치를 DB에 저장
+        cursor.execute("INSERT OR REPLACE INTO target_stats (target, passive_tot, jsluice_tot, katana_tot) VALUES (?, ?, ?, ?)", 
+                       (raw_target, new_passive_tot, new_jsluice_tot, new_katana_tot))
+
         count_200 = count_40x = count_50x = 0
         for url in url_map.keys():
             all_today_discovered_urls.append(url)
@@ -440,27 +472,27 @@ def build_advanced_excel_report():
         new_subdomains = current_subdomains - previous_subdomains
         sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains)) else "-"
         
-        # 글로벌 합계 누적
-        t_passive += passive_count
-        t_domain_new += domain_new_count
-        t_js_tot += jsluice_total
-        t_js_new += jsluice_new
-        t_ka_tot += katana_total
-        t_ka_new += katana_new
-        t_nuc += nuclei_count
-        t_truf += trufflehog_count
-        t_200 += count_200
-        t_40x += count_40x
-        t_50x += count_50x
+        # 총계 변수 업데이트
+        g_passive_tot += new_passive_tot
+        g_passive_new += domain_new_count
+        g_jsluice_tot += new_jsluice_tot
+        g_jsluice_new += jsluice_new
+        g_katana_tot += new_katana_tot
+        g_katana_new += katana_new
+        g_nuc += nuclei_count
+        g_truf += trufflehog_count
+        g_200 += count_200
+        g_40x += count_40x
+        g_50x += count_50x
         
-        # 💡 [데이터 주입 패치] "누적 / 신규" 문자열 형태로 한 셀에 합쳐서 병합
+        # 대시보드 열 추가
         ws_dash.append([
             dash_idx - 1, 
             escape_formula(raw_target), 
             sub_dash_mark, 
-            f"{passive_count} / {domain_new_count}", 
-            f"{jsluice_total} / {jsluice_new}", 
-            f"{katana_total} / {katana_new}", 
+            f"{new_passive_tot} / {domain_new_count}", 
+            f"{new_jsluice_tot} / {jsluice_new}", 
+            f"{new_katana_tot} / {katana_new}", 
             nuclei_count, 
             trufflehog_count, 
             count_200, 
@@ -474,7 +506,7 @@ def build_advanced_excel_report():
             if c == 2: cell.hyperlink = f"#'{sheet_title}'!A1"; cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
             elif c == 3 and sub_dash_mark == "🌟 신규": cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
-            # 💡 하이라이트 로직 갱신: 병합된 열에서도 신규 값이 있으면 전체 셀을 핑크색으로 표시
+            # 신규가 있으면 핑크색 하이라이트
             if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             elif c == 6 and katana_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
@@ -572,14 +604,14 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
 
-    # 💡 [하단 SUM 로직 패치] 텍스트가 된 열도 총계가 정상 출력되도록 수동 변수 주입
+    # 💡 [핵심 패치 4] 엑셀 수식이 아닌 파이썬 변수로 계산하여 텍스트 깨짐 방어
     if dash_idx > 2:
         ws_dash.append([
             "", "📊 총 합계 (Total)", "-", 
-            f"{t_passive} / {t_domain_new}", 
-            f"{t_js_tot} / {t_js_new}", 
-            f"{t_ka_tot} / {t_ka_new}", 
-            t_nuc, t_truf, t_200, t_40x, t_50x
+            f"{g_passive_tot} / {g_passive_new}", 
+            f"{g_jsluice_tot} / {g_jsluice_new}", 
+            f"{g_katana_tot} / {g_katana_new}", 
+            g_nuc, g_truf, g_200, g_40x, g_50x
         ])
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
@@ -594,8 +626,7 @@ def build_advanced_excel_report():
             if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)"]: sheet.column_dimensions[col_letter].width = 80  
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header in ["탐지 사유", "Gemini AI 지능형 헌팅 가이드 심층 분석"]: sheet.column_dimensions[col_letter].width = 55  
-            # 💡 [컬럼 너비 패치] 글자가 합쳐져 길어진 칸은 잘리지 않도록 너비를 더 넓게(22) 잡아줍니다
-            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "Katana (누적 / 신규)"]: sheet.column_dimensions[col_letter].width = 22
+            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "Katana (누적 / 신규)"]: sheet.column_dimensions[col_letter].width = 24
             elif header in ["응답 상태", "🔥 신규여부", "🔥 신규 발견", "🌟 신규 서브", "🔮 취약점 발생 확률"]: sheet.column_dimensions[col_letter].width = 16
             else: sheet.column_dimensions[col_letter].width = 18
 
