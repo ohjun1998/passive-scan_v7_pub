@@ -168,10 +168,12 @@ async def process_all_gemini(gemini_key, candidate_urls, model_name):
 
 def build_advanced_excel_report():
     print("[+] 초고속 SQLite DB 기반 차분 분석(Differential Analysis) 엔진 가동 중...", flush=True)
-    if not os.path.exists('targets.txt'): return
-    with open('targets.txt', 'r') as f: targets = [line.strip() for line in f if line.strip()]
-
-    target_map = {get_safe_domain(t): t for t in targets}
+    
+    # 💡 파일이 없어도 에러 없이 유연하게 배열 초기화 진행
+    targets = []
+    if os.path.exists('targets.txt'):
+        with open('targets.txt', 'r') as f:
+            targets = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
     
     os.makedirs('reports', exist_ok=True)
     db_path = 'reports/recon_history.db'
@@ -194,26 +196,13 @@ def build_advanced_excel_report():
     )''')
     conn.commit()
 
-    js_url_converter = {}
-    today_downloaded_js = set()
-    for mf in glob.glob('results/*_js_mapping.txt'):
-        try:
-            with open(mf, 'r', errors='ignore') as f:
-                for line in f:
-                    if '\t' in line:
-                        s, o = line.strip().split('\t', 1)
-                        js_url_converter[s] = o
-                        today_downloaded_js.add(o)
-        except: pass
+    # 💡 [핵심 글로벌 패치] 현재 targets.txt 멤버와 SQLite DB에 박혀있는 과거 멤버를 유니크 합집합으로 상호 결합!
+    cursor.execute("SELECT target FROM target_stats")
+    db_targets = [row[0] for row in cursor.fetchall()]
+    all_targets = list(set(targets + db_targets))
 
-    if today_downloaded_js:
-        cursor.executemany("INSERT OR IGNORE INTO downloaded_js (url) VALUES (?)", [(u,) for u in today_downloaded_js])
-        conn.commit()
-
-    cursor.execute("SELECT subdomain FROM historical_subdomains")
-    previous_subdomains = {row[0] for row in cursor.fetchall()}
-
-    matrix_data = {raw_target: {} for raw_target in targets}
+    target_map = {get_safe_domain(t): t for t in all_targets}
+    matrix_data = {raw_target: {} for raw_target in all_targets}
     signature_counts = {}
     
     junk_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.css', '.woff', '.woff2', '.ico', '.eot', '.ttf', '.mp4')
@@ -305,7 +294,6 @@ def build_advanced_excel_report():
                     status_codes[data.get('url')] = data.get('status_code', 'Dead')
         except: pass
 
-    # 💡 Dalfox JSON 스캔 결과 로딩 및 매핑 엔진
     dalfox_findings = {}
     for res_file in glob.glob('results/dalfox_results_*.json'):
         try:
@@ -386,44 +374,6 @@ def build_advanced_excel_report():
         ws_dash.cell(1, c).font = font_header; ws_dash.cell(1, c).fill = fill_header
         ws_dash.cell(1, c).alignment = align_center; ws_dash.cell(1, c).border = thin_border
 
-    if ai_ranked_results:
-        ws_ai = wb.create_sheet(title="🔮 Gemini AI Ranking")
-        ws_ai.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
-        ws_ai.merge_cells('A1:E1')
-        back_cell_ai = ws_ai.cell(row=1, column=1)
-        back_cell_ai.hyperlink = "#'Summary Dashboard'!A1"
-        back_cell_ai.font = Font(name='Malgun Gothic', size=11, bold=True, color='0056B3', underline='single')
-        back_cell_ai.fill = PatternFill(start_color='E9ECEF', end_color='E9ECEF', fill_type='solid')
-        back_cell_ai.alignment = align_left
-        
-        ws_ai.append(["No", "🔮 취약점 발생 확률", "예상 취약점 분류", "타겟 절대 경로 (URL)", "Gemini AI 지능형 헌팅 가이드 심층 분석"])
-        for c in range(1, 6):
-            ws_ai.cell(2, c).font = font_header; ws_ai.cell(2, c).fill = PatternFill(start_color='4B0082', end_color='4B0082', fill_type='solid')
-            ws_ai.cell(2, c).alignment = align_center; ws_ai.cell(2, c).border = thin_border
-            
-        for ai_idx, res in enumerate(ai_ranked_results, 1):
-            prob = res.get('probability', 0)
-            ws_ai.append([ai_idx, f"{prob}%", res.get('vuln_type', '-'), escape_formula(res.get('url', '-')), res.get('reason', '-')])
-            fill_color = 'FFD2D2' if prob >= 80 else ('FFE4C4' if prob >= 50 else 'F8F9FA')
-            for c in range(1, 6):
-                cell = ws_ai.cell(ai_idx + 2, c)
-                cell.font = font_data; cell.border = thin_border; cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type='solid')
-                if c == 2: cell.font = Font(name='Malgun Gothic', bold=True, color='DC3545' if prob>=50 else '333333'); cell.alignment = align_center
-                elif c in [4, 5]: cell.alignment = align_left
-                else: cell.alignment = align_center
-
-    ws_high = wb.create_sheet(title="High Risk Targets")
-    ws_high.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
-    ws_high.merge_cells('A1:I1')
-    back_cell_h = ws_high.cell(row=1, column=1)
-    back_cell_h.hyperlink = "#'Summary Dashboard'!A1"
-    back_cell_h.font = Font(name='Malgun Gothic', size=11, bold=True, color='0056B3', underline='single')
-    back_cell_h.fill = PatternFill(start_color='E9ECEF', end_color='E9ECEF', fill_type='solid')
-    back_cell_h.alignment = align_left
-
-    ws_high.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "도메인", "고위험 경로 (Endpoint)", "탐지 사유"]) 
-    for c in range(1, 10): ws_high.cell(2, c).font = font_header; ws_high.cell(2, c).fill = fill_header; ws_high.cell(2, c).alignment = align_center; ws_high.cell(2, c).border = thin_border
-
     dash_idx = 2
     all_today_discovered_urls = []
     high_risk_records = []
@@ -434,9 +384,12 @@ def build_advanced_excel_report():
     g_nuc = g_truf = g_200 = g_40x = g_50x = 0
 
     for raw_target, url_map in matrix_data.items():
-        if not url_map: continue
+        # 💡 [보존 패치] 오늘 발견된 건도 없고, 과거 DB 누적 이력도 아예 없는 완전 신규 빈 깡통 도메인이면 완전 패스
+        cursor.execute("SELECT passive_tot FROM target_stats WHERE target = ?", (raw_target,))
+        has_db = cursor.fetchone()
+        if not url_map and not has_db: continue
+
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
-        
         postman_folder = {"name": raw_target, "item": []}
         
         today_passive_count = len(url_map)
@@ -451,7 +404,6 @@ def build_advanced_excel_report():
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
         nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
 
-        # 진짜 누적 데이터 동적 결합 연산
         cursor.execute("SELECT passive_tot, jsluice_tot, katana_tot FROM target_stats WHERE target = ?", (raw_target,))
         row = cursor.fetchone()
         
@@ -478,7 +430,7 @@ def build_advanced_excel_report():
 
         current_subdomains = {urlparse(u).netloc for u in url_map.keys()}
         new_subdomains = current_subdomains - previous_subdomains
-        sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains)) else "-"
+        sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains) and today_passive_count > 0) else "-"
         
         g_passive_tot += new_passive_tot
         g_passive_new += domain_new_count
@@ -509,14 +461,30 @@ def build_advanced_excel_report():
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = font_data; cell.border = thin_border
-            if c == 2: cell.hyperlink = f"#'{sheet_title}'!A1"; cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
+            if c == 2:
+                # 💡 [지능형 하이퍼링크] 오늘 스캔해서 실존하는 파일이 있을 때만 클릭 가능하도록 링크 부여
+                if today_passive_count > 0:
+                    cell.hyperlink = f"#'{sheet_title}'!A1"
+                    cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
+                else:
+                    # 오늘 스캔 안 한 레거시 도메인은 링크를 해제하고 우아한 이탤릭 회색으로 대시보드 보존
+                    cell.font = Font(name='Malgun Gothic', color='777777', italic=True)
             elif c == 3 and sub_dash_mark == "🌟 신규": cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
-            if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-            elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-            elif c == 6 and katana_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-            elif c in [7, 8] and isinstance(cell.value, int) and cell.value > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            # 오늘 액티브하게 돌아간 도메인에 한해서만 신규 알람 컬러 하이라이트 인쇄
+            if today_passive_count > 0:
+                if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 6 and katana_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c in [7, 8] and isinstance(cell.value, int) and cell.value > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            else:
+                # 오늘 스캔 안 한 레거시 도메인은 통계 수치 텍스트를 연하게 강제 보정
+                if c != 2: cell.font = Font(name='Malgun Gothic', color='999999', italic=True)
         dash_idx += 1
+
+        # 💡 [핵심 컷오프] 오늘 수집된 데이터가 없다면 디렉토리 시트 렌더링 및 Postman 적재 단계를 건너뜀 (통계 완전 보존)
+        if today_passive_count == 0:
+            continue
 
         ws = wb.create_sheet(title=sheet_title)
         ws.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
@@ -559,7 +527,6 @@ def build_advanced_excel_report():
                 elif c in [4, 5, 7]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
-            # 💡 Dalfox XSS 반사 경고 라벨링 연동
             is_high_risk, reason = False, ""
             if url in nuclei_findings: is_high_risk, reason = True, f"🔥 [Nuclei 탐지] {' / '.join(list(set(nuclei_findings[url])))}"
             elif url in dalfox_findings: is_high_risk, reason = True, dalfox_findings[url]
@@ -613,13 +580,12 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
 
-    # 파이썬 고정 변수 합산값으로 대시보드 마스터 총계 인쇄
     if dash_idx > 2:
         ws_dash.append([
             "", "📊 총 합계 (Total)", "-", 
             f"{g_passive_tot} / {g_passive_new}", 
             f"{g_jsluice_tot} / {g_jsluice_new}", 
-            f"{g_katana_tot} / g_{g_katana_new}", 
+            f"{g_katana_tot} / {g_katana_new}", 
             g_nuc, g_truf, g_200, g_40x, g_50x
         ])
         for c in range(1, len(dash_headers) + 1):
