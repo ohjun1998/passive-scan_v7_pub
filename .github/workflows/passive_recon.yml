@@ -214,11 +214,10 @@ jobs:
           if [ "$PARAM_TOTAL" -gt 0 ]; then
              echo "========================================================="
              echo "🎯 데이터 변조 위험이 완벽히 제거된 ${PARAM_TOTAL}개 안전 URL 스캔 시작"
-             # ✅ [수정 1] --concurrency 옵션을 올바른 옵션인 --worker(-w)로 수정
-             echo "🛡️ 세팅: --only-discovery (패킷 85% 절약) / --worker 1 --delay 200 (WAF 우회)"
+             echo "⚡ 속도 최적화 세팅: --worker 15, --delay 100, 불필요한 마이닝 생략"
              echo "========================================================="
              
-             timeout 30m dalfox pipe param_urls.txt --only-discovery --worker 1 --delay 200 --silence --format json > strike_out/dalfox_results_${{ matrix.group }}.json || true
+             timeout 30m dalfox pipe param_urls.txt --only-discovery --worker 15 --delay 100 --timeout 5 --skip-mining-dom --skip-mining-dict --silence --format json > strike_out/dalfox_results_${{ matrix.group }}.json || true
           else
              echo "========================================================="
              echo "ℹ️ 안전한 조회용 파라미터 URL이 없어 Dalfox 스캔을 건너뜁니다."
@@ -247,7 +246,6 @@ jobs:
              echo "🛡️ 로직: 봇 차단 방어 (초당 15회 고정) / 무조건 최대 2시간 타임아웃 설정"
              echo "========================================================="
              
-             # ✅ [수정 2] Nuclei v3의 변경된 템플릿 디렉토리 구조(http/*)에 맞게 경로 수정
              timeout 120m nuclei -l alive_urls.txt -t http/exposures/,http/technologies/,http/misconfiguration/ -rl $N_RL -c $N_C -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -je strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
           else
              echo "========================================================="
