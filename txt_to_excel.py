@@ -186,7 +186,6 @@ def build_advanced_excel_report():
     cursor.execute("CREATE TABLE IF NOT EXISTS downloaded_js (url TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS historical_subdomains (subdomain TEXT PRIMARY KEY)")
     
-    # 💡 [핵심 패치 1] 영구적으로 깎이지 않는 '진짜 누적' 데이터를 보관하는 테이블 신설
     cursor.execute('''CREATE TABLE IF NOT EXISTS target_stats (
         target TEXT PRIMARY KEY,
         passive_tot INTEGER DEFAULT 0,
@@ -306,6 +305,20 @@ def build_advanced_excel_report():
                     status_codes[data.get('url')] = data.get('status_code', 'Dead')
         except: pass
 
+    # 💡 [신규 패치] 각 VM 노드들이 가동한 Dalfox JSON 결과물 파싱 엔진
+    dalfox_findings = {}
+    for res_file in glob.glob('results/dalfox_results_*.json'):
+        try:
+            with open(res_file, 'r', errors='ignore') as f:
+                for line in f:
+                    if not line.strip(): continue
+                    data = json.loads(line.strip())
+                    url = data.get('url', data.get('target', ''))
+                    if url:
+                        param_name = data.get('param', 'unknown')
+                        dalfox_findings[url] = f"⚠️ [Dalfox 반사] 파라미터 '{param_name}' 값 필터링 누출 검증 (XSS 취약 의심)"
+        except: pass
+
     nuclei_findings = {}
     for res_file in glob.glob('results/nuclei_results_*.json'):
         try:
@@ -327,13 +340,13 @@ def build_advanced_excel_report():
         for url_map in matrix_data.values():
             for url, data in url_map.items():
                 sc = str(status_codes.get(url, 'Dead'))
-                if url in nuclei_findings or 'TruffleHog' in data["tools"] or sc in ['200', '301', '302', '401', '403', '500'] or '?' in url:
+                if url in nuclei_findings or url in dalfox_findings or 'TruffleHog' in data["tools"] or sc in ['200', '301', '302', '401', '403', '500'] or '?' in url:
                     candidate_urls.append(url)
                     
         candidate_urls = list(set(candidate_urls))[:300]
         if candidate_urls:
             selected_model = get_best_gemini_model(gemini_key)
-            print(f"[+] 총 {len(candidate_urls)}개의 핵심 엔드포인트를 식별하여 AI 추론을 요청합니다...")
+            print(f"[+] 총 {len(candidate_urls)}개의 핵심 엔드포인트를 식별하여 AI 추론을 요청합니다...", flush=True)
             ai_ranked_results = asyncio.run(process_all_gemini(gemini_key, candidate_urls, selected_model))
             
             if ai_ranked_results:
@@ -415,7 +428,6 @@ def build_advanced_excel_report():
     all_today_discovered_urls = []
     high_risk_records = []
     
-    # 💡 [핵심 패치 2] 글로벌 총계 합계를 위한 파이썬 내부 변수 (엑셀 SUM 에러 방어)
     g_passive_tot = g_passive_new = 0
     g_jsluice_tot = g_jsluice_new = 0
     g_katana_tot = g_katana_new = 0
@@ -427,7 +439,6 @@ def build_advanced_excel_report():
         
         postman_folder = {"name": raw_target, "item": []}
         
-        # 오늘 발견한 전체 개수 및 신규 개수 파악
         today_passive_count = len(url_map)
         domain_new_count = sum(1 for data in url_map.values() if data.get("is_new", False))
         
@@ -440,23 +451,19 @@ def build_advanced_excel_report():
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
         nuclei_count = sum(1 for u in url_map.keys() if u in nuclei_findings)
 
-        # 💡 [핵심 패치 3] SQLite DB에서 진짜 누적 데이터를 불러오고 업데이트
         cursor.execute("SELECT passive_tot, jsluice_tot, katana_tot FROM target_stats WHERE target = ?", (raw_target,))
         row = cursor.fetchone()
         
         if row:
             db_passive_tot, db_jsluice_tot, db_katana_tot = row
-            # 기존 누적 데이터에 '오늘 발견한 신규 개수'를 무조건 더해서 업데이트!
             new_passive_tot = db_passive_tot + domain_new_count
             new_jsluice_tot = db_jsluice_tot + jsluice_new
             new_katana_tot = db_katana_tot + katana_new
         else:
-            # 처음 스캔하는 도메인이면 오늘 발견한 총량을 누적의 베이스라인으로 삼음
             new_passive_tot = today_passive_count
             new_jsluice_tot = today_jsluice_total
             new_katana_tot = today_katana_total
             
-        # 업데이트된 진짜 누적치를 DB에 저장
         cursor.execute("INSERT OR REPLACE INTO target_stats (target, passive_tot, jsluice_tot, katana_tot) VALUES (?, ?, ?, ?)", 
                        (raw_target, new_passive_tot, new_jsluice_tot, new_katana_tot))
 
@@ -472,7 +479,6 @@ def build_advanced_excel_report():
         new_subdomains = current_subdomains - previous_subdomains
         sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains)) else "-"
         
-        # 총계 변수 업데이트
         g_passive_tot += new_passive_tot
         g_passive_new += domain_new_count
         g_jsluice_tot += new_jsluice_tot
@@ -485,7 +491,6 @@ def build_advanced_excel_report():
         g_40x += count_40x
         g_50x += count_50x
         
-        # 대시보드 열 추가
         ws_dash.append([
             dash_idx - 1, 
             escape_formula(raw_target), 
@@ -506,7 +511,6 @@ def build_advanced_excel_report():
             if c == 2: cell.hyperlink = f"#'{sheet_title}'!A1"; cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
             elif c == 3 and sub_dash_mark == "🌟 신규": cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
-            # 신규가 있으면 핑크색 하이라이트
             if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             elif c == 6 and katana_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
@@ -554,8 +558,10 @@ def build_advanced_excel_report():
                 elif c in [4, 5, 7]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
+            # 💡 [하이라이트 패치] Dalfox XSS 반사 사유 추출 로직 병합
             is_high_risk, reason = False, ""
             if url in nuclei_findings: is_high_risk, reason = True, f"🔥 [Nuclei 탐지] {' / '.join(list(set(nuclei_findings[url])))}"
+            elif url in dalfox_findings: is_high_risk, reason = True, dalfox_findings[url]
             elif 'TruffleHog' in data["tools"]: is_high_risk, reason = True, "🔥 [Critical] TruffleHog: 기밀 키(Secret) 유출 검증됨"
             elif is_blacklist: is_high_risk, reason = True, "⚠️ [Warning] 파괴적 엔드포인트 수동 검점 요망"
             else:
@@ -579,6 +585,8 @@ def build_advanced_excel_report():
                     "is_new_sub": is_new_subdomain,
                     "priority": get_status_priority(current_status)
                 })
+
+        if postman_folder["item"]: postman_collection["item"].append(postman_folder)
 
     high_risk_records.sort(key=lambda x: (not x["is_new"], x["priority"], x["raw_target"], x["url"]))
     high_risk_idx = 3
@@ -604,7 +612,6 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
 
-    # 💡 [핵심 패치 4] 엑셀 수식이 아닌 파이썬 변수로 계산하여 텍스트 깨짐 방어
     if dash_idx > 2:
         ws_dash.append([
             "", "📊 총 합계 (Total)", "-", 
