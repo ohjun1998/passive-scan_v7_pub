@@ -144,7 +144,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 3] Httpx & Nuclei & Dalfox 스텔스 타격대 (20대 풀가동)
+  # [Job 3] Httpx & Dalfox & Nuclei 스텔스 타격대 (20대 풀가동)
   # ==========================================
   httpx-nuclei-strike:
     runs-on: ubuntu-latest
@@ -201,25 +201,30 @@ jobs:
           ALIVE_TOTAL=$(wc -l < alive_urls.txt)
           
           # =========================================================
-          # 🔥 [신규 추가] Dalfox 3대 우회 수칙 적용 스텔스 XSS 퍼징 스텝
+          # 🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시 (노드 ${{ matrix.group }})
           # =========================================================
-          grep '=' alive_urls.txt > param_urls.txt || true
+          # 1. 파라미터가 실존하는 URL 추출
+          grep '=' alive_urls.txt > param_raw_urls.txt || true
+          
+          # 2. 💡 [최종 보안 패치] 데이터 변조 및 Stored 에러 방지를 위해 파괴적 키워드 담긴 URL 원천 소각
+          grep -v -iE "(delete|remove|clear|destroy|update|edit|modify|write|insert|post|create|join|change|leave|quit|sign)" param_raw_urls.txt > param_urls.txt || true
+          
           PARAM_TOTAL=$(wc -l < param_urls.txt)
           
           if [ "$PARAM_TOTAL" -gt 0 ]; then
              echo "========================================================="
-             echo "🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시 (노드 ${{ matrix.group }})"
-             echo "🎯 대상: 파라미터가 실존하는 ${PARAM_TOTAL}개 핵심 URL"
-             echo "🛡️ 세팅: --only-discovery (패킷 85% 절약) / --concurrency 1 --delay 200 (WAF 무력화)"
+             echo "🎯 데이터 변조 위험이 완벽히 제거된 ${PARAM_TOTAL}개 안전 URL 스캔 시작"
+             echo "🛡️ 세팅: --only-discovery (패킷 85% 절약) / --concurrency 1 --delay 200 (WAF 우회)"
              echo "========================================================="
              
              timeout 30m dalfox pipe param_urls.txt --only-discovery --concurrency 1 --delay 200 --silence --format json > strike_out/dalfox_results_${{ matrix.group }}.json || true
           else
              echo "========================================================="
-             echo "ℹ️ 파라미터가 포함된 URL이 없어 Dalfox 스캔을 건너뜁니다."
+             echo "ℹ️ 안전한 조회용 파라미터 URL이 없어 Dalfox 스캔을 건너뜁니다."
              echo "========================================================="
              touch strike_out/dalfox_results_${{ matrix.group }}.json
           fi
+          rm -f param_raw_urls.txt
           
           # =========================================================
           # [Phase 2] Nuclei 정밀 타격
