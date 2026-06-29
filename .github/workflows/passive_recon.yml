@@ -42,7 +42,7 @@ jobs:
         sudo mv trufflehog /usr/local/bin/
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
-    - name: 이전 스캔 결과 다운로드 (과거 JS 다운로드 이력 확보용)
+    - name: 이전 스캔 결과 다운로드
       uses: dawidd6/action-download-artifact@v3
       continue-on-error: true
       with:
@@ -75,7 +75,7 @@ jobs:
         mkdir -p encrypted_final
         tar -czf - -C results/ --exclude='*_js_files' . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_final/node_results_${{ matrix.group }}.tar.gz.gpg
 
-    - name: 아티팩트 업로드 (다음 단계로 전달)
+    - name: 아티팩트 업로드
       uses: actions/upload-artifact@v4
       with:
         name: node-results-${{ matrix.group }}
@@ -99,7 +99,7 @@ jobs:
     - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
-    - name: 20대 가상머신의 파편 데이터 전부 다운로드
+    - name: 모든 파편 데이터 다운로드
       uses: actions/download-artifact@v4
       with:
         path: encrypted_storage
@@ -112,7 +112,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 이전 스캔 결과 다운로드 (과거 URL 타격대 합류용)
+    - name: 이전 스캔 결과 다운로드
       uses: dawidd6/action-download-artifact@v3
       continue-on-error: true
       with:
@@ -128,10 +128,10 @@ jobs:
         unzip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip || true
         cd ..
 
-    - name: 글로벌 셔플 엔진 가동 (과거 DB 통합 및 타격 준비)
+    - name: 글로벌 셔플 엔진 가동
       run: python global_mixer.py
 
-    - name: Httpx/Nuclei 타격 노드들을 위한 20분할 탄창 암호화
+    - name: 20분할 탄창 암호화
       run: |
         mkdir -p encrypted_chunks
         tar -czf - -C chunks/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_chunks/global_chunks.tar.gz.gpg
@@ -144,7 +144,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 3] Httpx & Nuclei 스텔스 타격대 (20대 풀가동)
+  # [Job 3] Httpx & Nuclei & Dalfox 스텔스 타격대 (20대 풀가동)
   # ==========================================
   httpx-nuclei-strike:
     runs-on: ubuntu-latest
@@ -161,10 +161,11 @@ jobs:
       uses: actions/setup-go@v5
       with: { go-version: 'stable' }
 
-    - name: 최신 Httpx, Nuclei 및 uro 설치
+    - name: 최신 Httpx, Nuclei, Dalfox 및 uro 설치
       run: |
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
         go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+        go install github.com/hahwul/dalfox/v2@latest
         pip install uro
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
@@ -184,46 +185,74 @@ jobs:
           mv chunks/clean_chunk.txt chunks/chunk_${{ matrix.group }}.txt
         fi
 
-    - name: 다이내믹 스텔스 Httpx & Nuclei 타격 개시
+    - name: 다이내믹 스텔스 Httpx & Dalfox & Nuclei 타격 개시
       run: |
         mkdir -p strike_out
         if [ -s chunks/chunk_${{ matrix.group }}.txt ]; then
           TOTAL=$(wc -l < chunks/chunk_${{ matrix.group }}.txt)
-          GLOBAL_EST=$((TOTAL * 20))
-          
-          if [ "$GLOBAL_EST" -ge 100000 ]; then RL=30; THREADS=15; GEAR="초고속 분산 모드"
-          elif [ "$GLOBAL_EST" -ge 20000 ]; then RL=20; THREADS=10; GEAR="고속 스텔스 모드"
-          elif [ "$GLOBAL_EST" -ge 5000 ]; then RL=10; THREADS=5; GEAR="중형 스텔스 모드"
-          elif [ "$GLOBAL_EST" -ge 1000 ]; then RL=5; THREADS=2; GEAR="정밀 스텔스 모드"
-          else RL=2; THREADS=1; GEAR="극한 스텔스 모드 (타겟 밀집 방어)"; fi
           
           echo "========================================================="
           echo "🤖 [Phase 1] Httpx 생존 검사 시작 (노드 ${{ matrix.group }})"
-          echo "🚀 자동 변속: '$GEAR' (초당 $RL 개 검사)"
           echo "========================================================="
           
-          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl $RL -t $THREADS -timeout 4 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Httpx (" NR "/" t ") " $0; fflush()}'
+          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 20 -t 5 -timeout 4 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Httpx (" NR "/" t ") " $0; fflush()}'
           
           cat strike_out/httpx_results_${{ matrix.group }}.json | jq -r 'select(.status_code != null) | .url' > alive_urls.txt
           ALIVE_TOTAL=$(wc -l < alive_urls.txt)
           
+          # =========================================================
+          # 🔥 [신규 추가] Dalfox 3대 우회 수칙 적용 스텔스 XSS 퍼징 스텝
+          # =========================================================
+          grep '=' alive_urls.txt > param_urls.txt || true
+          PARAM_TOTAL=$(wc -l < param_urls.txt)
+          
+          if [ "$PARAM_TOTAL" -gt 0 ]; then
+             echo "========================================================="
+             echo "🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시 (노드 ${{ matrix.group }})"
+             echo "🎯 대상: 파라미터가 실존하는 ${PARAM_TOTAL}개 핵심 URL"
+             echo "🛡️ 세팅: --only-discovery (패킷 85% 절약) / --concurrency 1 --delay 200 (WAF 무력화)"
+             echo "========================================================="
+             
+             timeout 30m dalfox pipe param_urls.txt --only-discovery --concurrency 1 --delay 200 --silence --format json > strike_out/dalfox_results_${{ matrix.group }}.json || true
+          else
+             echo "========================================================="
+             echo "ℹ️ 파라미터가 포함된 URL이 없어 Dalfox 스캔을 건너뜁니다."
+             echo "========================================================="
+             touch strike_out/dalfox_results_${{ matrix.group }}.json
+          fi
+          
+          # =========================================================
+          # [Phase 2] Nuclei 정밀 타격
+          # =========================================================
           echo "========================================================="
           echo "🥷 [Phase 2] Nuclei 스텔스 정밀 타격 시작"
           echo "🎯 대상: Httpx 생존 확인된 ${ALIVE_TOTAL}개 URL"
-          echo "🛡️ 로직: 초당 10회 제한 / Exposures, Tech, Misconfig 전용 / 구글봇 위장"
-          echo "========================================================="
           
           if [ "$ALIVE_TOTAL" -gt 0 ]; then
-             nuclei -l alive_urls.txt -t exposures/,technologies/,misconfiguration/ -rl 10 -c 2 -H "User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" -je strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
+             N_RL=15
+             N_C=3
+             
+             if [ "$ALIVE_TOTAL" -gt 3000 ]; then
+                 echo "🚨 [경고] 타겟이 너무 많습니다. WAF IP 차단 및 6시간 타임아웃 방어를 위해 핵심 타겟 3,000개만 샘플링 타격합니다."
+                 shuf -n 3000 alive_urls.txt > alive_urls_sampled.txt
+                 mv alive_urls_sampled.txt alive_urls.txt
+             fi
+             
+             echo "🛡️ 로직: 봇 차단 방어 (초당 15회 고정) / 무조건 최대 2시간 타임아웃 설정"
+             echo "========================================================="
+             
+             timeout 120m nuclei -l alive_urls.txt -t exposures/,technologies/,misconfiguration/ -rl $N_RL -c $N_C -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -je strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
           else
+             echo "========================================================="
              touch strike_out/nuclei_results_${{ matrix.group }}.json
           fi
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
+          touch strike_out/dalfox_results_${{ matrix.group }}.json
           touch strike_out/nuclei_results_${{ matrix.group }}.json
         fi
 
-    - name: 타격 결과 암호화 (Httpx + Nuclei)
+    - name: 타격 결과 암호화 (Httpx + Dalfox + Nuclei)
       run: |
         mkdir -p encrypted_strike
         tar -czf - -C strike_out/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_strike/strike_results_${{ matrix.group }}.tar.gz.gpg
@@ -255,7 +284,7 @@ jobs:
     - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
 
-    - name: 모든 암호화된 결과물 취합 (파편 + 타격)
+    - name: 모든 암호화된 결과물 취합
       uses: actions/download-artifact@v4
       with:
         path: encrypted_storage
@@ -268,7 +297,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 이전 스캔 결과 다운로드 (신규 데이터 비교용 SQLite DB 확보)
+    - name: 이전 스캔 결과 다운로드
       uses: dawidd6/action-download-artifact@v3
       continue-on-error: true
       with:
@@ -284,25 +313,25 @@ jobs:
         unzip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip || true
         cd ..
 
-    - name: 지능형 컬러 엑셀 리포트 제작 및 SQLite 백업 갱신
+    - name: 지능형 컬러 엑셀 리포트 제작
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: python -u txt_to_excel.py
 
-    - name: 최종 리포트 및 암호화 바이너리 영구 DB 금고 봉인 (Secure ZIP)
+    - name: 최종 리포트 금고 봉인
       run: |
         cd reports
         zip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip passive_recon_report_*.xlsx recon_history.db postman_collection_*.json
         cd ..
 
-    - name: 깃허브 아티팩트에 금고형 엑셀 파일 저장
+    - name: 깃허브 아티팩트에 저장
       uses: actions/upload-artifact@v4
       with:
         name: passive-recon-master-report-secured
         path: reports/passive_recon_report_secured.zip
         retention-days: 14
 
-    - name: 디스코드 엑셀 자동 배송
+    - name: 디스코드 배송
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
