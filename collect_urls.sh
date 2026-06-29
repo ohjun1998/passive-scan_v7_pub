@@ -47,7 +47,7 @@ collect_master() {
     # 💡 [방어 3] Katana는 무거우므로 300개만 샘플링하여 크롤링
     shuf -n 300 "results/${safe_domain}_clean_seed.txt" > "results/${safe_domain}_katana_seed.txt" 2>/dev/null || cp "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
 
-    # 🔥 [요청 사항 적용] Katana Depth를 -d 3 으로 수정!
+    # 💡 Katana Depth를 -d 3 으로 획기적 확장
     echo "  -> [Katana] Depth 3 크롤링 시작 (최대 15분 타임아웃)..."
     timeout 15m katana -list "results/${safe_domain}_katana_seed.txt" -d 3 -jc -kf all -c 2 -rl 50 -ct 10 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
     grep -iE "$regex" "results/${safe_domain}_katana.txt" | sort -u -o "results/${safe_domain}_katana.txt"
@@ -88,7 +88,7 @@ collect_master() {
 
             shuf "results/${safe_domain}_js_new_list.txt" > "results/${safe_domain}_js_urls_target.txt"
             
-            # 💡 [방어 4] 다운로드 한도를 100개로 축소하여 6시간 제한 무조건 회피
+            # 💡 다운로드 한도를 100개로 축소하여 6시간 제한 무조건 회피
             local MAX_SUCCESS=100
             local success_cnt=0
             local fail_cnt=0
@@ -114,7 +114,7 @@ collect_master() {
 }
 
 export -f collect_master
-# 💡 [방어 5] 가상머신 터짐(OOM) 방지를 위해 동시 실행 프로세스를 2개로 고정
+# 💡 가상머신 터짐(OOM) 방지를 위해 동시 실행 프로세스를 2개로 고정
 xargs -P 2 -n 1 -a "$TARGET_FILE" -I {} bash -c 'collect_master "{}"'
 
 rm -f targets_group*
