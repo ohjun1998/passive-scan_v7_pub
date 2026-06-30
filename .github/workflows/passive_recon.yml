@@ -8,9 +8,6 @@ permissions:
   actions: read 
 
 jobs:
-  # ==========================================
-  # [Job 1] 20대 노드 풀가동 (논스톱 수집 및 오프라인 분석)
-  # ==========================================
   recon-node:
     runs-on: ubuntu-latest
     strategy:
@@ -82,9 +79,6 @@ jobs:
         path: encrypted_final/node_results_${{ matrix.group }}.tar.gz.gpg
         retention-days: 1
 
-  # ==========================================
-  # [Job 2] 글로벌 믹서기 (단 1대) - 타겟 병합, 중복제거, 셔플
-  # ==========================================
   global-mixer:
     runs-on: ubuntu-latest
     needs: recon-node
@@ -143,9 +137,6 @@ jobs:
         path: encrypted_chunks/global_chunks.tar.gz.gpg
         retention-days: 1
 
-  # ==========================================
-  # [Job 3] Httpx & Dalfox & Nuclei 스텔스 타격대 (20대 풀가동)
-  # ==========================================
   httpx-nuclei-strike:
     runs-on: ubuntu-latest
     needs: global-mixer
@@ -219,33 +210,29 @@ jobs:
                --skip-mining-dom --skip-mining-dict --skip-bav --skip-grepping \
                --format json | tee strike_out/dalfox_results_${{ matrix.group }}.json || true
           else
-             echo "========================================================="
-             echo "ℹ️ 안전한 조회용 파라미터 URL이 없어 Dalfox 스캔을 건너뜁니다."
-             echo "========================================================="
              touch strike_out/dalfox_results_${{ matrix.group }}.json
           fi
           
           # =========================================================
-          # 🛢️ [Phase 1.8] Nuclei DAST: Blind SQLi 포인트 초고속 탐색
+          # 🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 포인트 초고속 탐색
           # =========================================================
           if [ "$PARAM_TOTAL" -gt 0 ]; then
              echo "========================================================="
-             echo "🛢️ [Phase 1.8] Nuclei DAST: Blind SQLi (Time/Boolean) 포인트 퀵 스캔 시작"
+             echo "🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 취약점 포인트 퀵 스캔 시작"
              echo "🎯 대상: 파라미터가 포함된 ${PARAM_TOTAL}개 안전 URL"
              echo "========================================================="
              
              timeout 30m nuclei -l param_urls.txt \
                -dast \
-               -tags sqli,blind,timebased,boolean \
+               -tags sqli,blind,timebased,boolean,ssti \
                -rl 30 -c 5 \
                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               -je strike_out/nuclei_results_blind_sqli_${{ matrix.group }}.json \
+               -je strike_out/nuclei_dast_points_${{ matrix.group }}.json \
                -silent || true
                
-             # 탐지 시 콘솔 알림 출력
-             cat strike_out/nuclei_results_blind_sqli_${{ matrix.group }}.json 2>/dev/null | jq -r 'select(.url != null) | "    🛢️ \033[31;1m[SQLi 탐지!] Blind SQLi 포인트 포착: \(.url)\033[0m"' | awk '{print $0; fflush()}' || true
+             cat strike_out/nuclei_dast_points_${{ matrix.group }}.json 2>/dev/null | jq -r 'select(.url != null) | "\(.info.name)||\(.url)"' | awk -F '||' '{print "    🎯 \033[31;1m[DAST 탐지!]\033[0m 취약 포인트 포착 (" $1 "): " $2; fflush()}' || true
           else
-             touch strike_out/nuclei_results_blind_sqli_${{ matrix.group }}.json
+             touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
           fi
           
           rm -f param_raw_urls.txt
@@ -262,13 +249,9 @@ jobs:
              N_C=3
              
              if [ "$ALIVE_TOTAL" -gt 3000 ]; then
-                 echo "🚨 [경고] 타겟이 너무 많습니다. 3,000개만 샘플링 타격합니다."
                  shuf -n 3000 alive_urls.txt > alive_urls_sampled.txt
                  mv alive_urls_sampled.txt alive_urls.txt
              fi
-             
-             echo "🛡️ 로직: 초경량 템플릿(Config, Default-logins) / 초당 15회 제한"
-             echo "========================================================="
              
              timeout 120m nuclei -l alive_urls.txt \
                -t http/exposures/configs/,http/default-logins/,http/miscellaneous/ \
@@ -277,13 +260,12 @@ jobs:
                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
                -je strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
           else
-             echo "========================================================="
              touch strike_out/nuclei_results_${{ matrix.group }}.json
           fi
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
           touch strike_out/dalfox_results_${{ matrix.group }}.json
-          touch strike_out/nuclei_results_blind_sqli_${{ matrix.group }}.json
+          touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
           touch strike_out/nuclei_results_${{ matrix.group }}.json
         fi
 
@@ -299,9 +281,6 @@ jobs:
         path: encrypted_strike/strike_results_${{ matrix.group }}.tar.gz.gpg
         retention-days: 1
 
-  # ==========================================
-  # [Job 4] 엑셀 사출 (단 1대)
-  # ==========================================
   excel-reporter:
     runs-on: ubuntu-latest
     needs: [recon-node, httpx-nuclei-strike]
