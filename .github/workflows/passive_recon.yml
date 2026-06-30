@@ -177,7 +177,6 @@ jobs:
 
     - name: 최신 Httpx, Nuclei, Dalfox 및 uro 설치
       run: |
-        # 💡 [네트워크 에러 방어] HTTP/2 스트림 에러 우회 및 자동 재시도 로직 추가
         export GODEBUG=http2client=0
         export GOPROXY=https://proxy.golang.org,direct
         
@@ -232,7 +231,6 @@ jobs:
           # 🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시 (노드 ${{ matrix.group }})
           # =========================================================
           grep '=' alive_urls.txt > param_raw_urls.txt || true
-          
           grep -v -iE "(delete|remove|clear|destroy|update|edit|modify|write|insert|post|create|join|change|leave|quit|sign)" param_raw_urls.txt > param_urls.txt || true
           
           PARAM_TOTAL=$(wc -l < param_urls.txt)
@@ -240,10 +238,18 @@ jobs:
           if [ "$PARAM_TOTAL" -gt 0 ]; then
              echo "========================================================="
              echo "🎯 데이터 변조 위험이 완벽히 제거된 ${PARAM_TOTAL}개 안전 URL 스캔 시작"
-             echo "⚡ 2차 속도 최적화: --worker 30, --delay 50, --timeout 3 (무한 딜레이 방지)"
+             echo "⚡ 3차 속도 최적화: --worker 50, --timeout 2, 부가 기능(BAV, Grep) 완벽 차단"
              echo "========================================================="
              
-             timeout 30m dalfox file param_urls.txt --only-discovery --worker 30 --delay 50 --timeout 3 --skip-mining-dom --skip-mining-dict --format json | tee strike_out/dalfox_results_${{ matrix.group }}.json | jq -r --unbuffered 'select(.url != null) | "    🦊 [Dalfox 탐지!] 파라미터 반사 취약점 포착: \(.url)"' 2>/dev/null | awk '{print $0; fflush()}' || true
+             # 💡 [핵심 패치] Dalfox의 불필요한 로그는 숨기고(grep), 현재 스캔 중인 URL과 반사된 파라미터만 실시간으로 뽑아냅니다.
+             timeout 15m dalfox file param_urls.txt \
+               --only-discovery --worker 50 --timeout 2 \
+               --skip-mining-dom --skip-mining-dict --skip-bav --skip-grepping \
+               --format json --no-color \
+               2> >(awk '/Starting scan/ {print "    🔎 [Dalfox 타겟] " $NF; fflush()} /Reflected/ {print "      ↳ ⚡ 파라미터 반사됨: " $3; fflush()}') \
+               | tee strike_out/dalfox_results_${{ matrix.group }}.json \
+               | jq -r --unbuffered 'select(.url != null) | "    🦊 \033[31;1m[Dalfox 탐지!] XSS 취약점 포착: \(.url)\033[0m"' 2>/dev/null \
+               | awk '{print $0; fflush()}' || true
           else
              echo "========================================================="
              echo "ℹ️ 안전한 조회용 파라미터 URL이 없어 Dalfox 스캔을 건너뜁니다."
