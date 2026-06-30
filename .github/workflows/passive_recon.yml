@@ -203,10 +203,7 @@ jobs:
           # =========================================================
           # 🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시 (노드 ${{ matrix.group }})
           # =========================================================
-          # 1. 파라미터가 실존하는 URL 추출
           grep '=' alive_urls.txt > param_raw_urls.txt || true
-          
-          # 2. 💡 [최종 보안 패치] 데이터 변조 및 Stored 에러 방지를 위해 파괴적 키워드 담긴 URL 원천 소각
           grep -v -iE "(delete|remove|clear|destroy|update|edit|modify|write|insert|post|create|join|change|leave|quit|sign)" param_raw_urls.txt > param_urls.txt || true
           
           PARAM_TOTAL=$(wc -l < param_urls.txt)
@@ -214,10 +211,14 @@ jobs:
           if [ "$PARAM_TOTAL" -gt 0 ]; then
              echo "========================================================="
              echo "🎯 데이터 변조 위험이 완벽히 제거된 ${PARAM_TOTAL}개 안전 URL 스캔 시작"
-             echo "🛡️ 세팅: --only-discovery (패킷 85% 절약) / --worker 1 --delay 200 (WAF 우회)"
+             echo "⚡ 3차 속도 최적화 및 진행상황 표시 모드: --worker 50, --timeout 2"
              echo "========================================================="
              
-             timeout 30m dalfox pipe param_urls.txt --only-discovery --worker 1 --delay 200 --silence --format json > strike_out/dalfox_results_${{ matrix.group }}.json || true
+             # ✅ [핵심 패치] Dalfox 진행 상황을 GitHub Actions 로그 화면에서 직접 볼 수 있도록 필터 제거
+             timeout 15m dalfox file param_urls.txt \
+               --only-discovery --worker 50 --timeout 2 \
+               --skip-mining-dom --skip-mining-dict --skip-bav --skip-grepping \
+               --format json | tee strike_out/dalfox_results_${{ matrix.group }}.json || true
           else
              echo "========================================================="
              echo "ℹ️ 안전한 조회용 파라미터 URL이 없어 Dalfox 스캔을 건너뜁니다."
@@ -246,7 +247,13 @@ jobs:
              echo "🛡️ 로직: 봇 차단 방어 (초당 15회 고정) / 무조건 최대 2시간 타임아웃 설정"
              echo "========================================================="
              
-             timeout 120m nuclei -l alive_urls.txt -t http/exposures/configs/,http/default-logins/,http/miscellaneous/ -tags config,panel,exposure,swagger,docs -rl $N_RL -c $N_C -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -je strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
+             # ✅ [경량 스캔 패치] Config, 환경파일, 기본 로그인, Docs 문서 위주로만 빠르고 가볍게 스캔
+             timeout 120m nuclei -l alive_urls.txt \
+               -t http/exposures/configs/,http/default-logins/,http/miscellaneous/ \
+               -tags config,panel,exposure,swagger,docs \
+               -rl $N_RL -c $N_C \
+               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               -je strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
           else
              echo "========================================================="
              touch strike_out/nuclei_results_${{ matrix.group }}.json
