@@ -201,55 +201,25 @@ jobs:
           ALIVE_TOTAL=$(wc -l < alive_urls.txt)
           
           # =========================================================
-          # 🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시
+          # 🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시 (임시 비활성화)
           # =========================================================
-          grep '=' alive_urls.txt > param_raw_urls.txt || true
-          grep -v -iE "(delete|remove|clear|destroy|update|edit|modify|write|insert|post|create|join|change|leave|quit|sign)" param_raw_urls.txt > param_urls.txt || true
-          
-          PARAM_TOTAL=$(wc -l < param_urls.txt)
-          
-          if [ "$PARAM_TOTAL" -gt 0 ]; then
-             echo "========================================================="
-             echo "🎯 데이터 변조 위험이 완벽히 제거된 ${PARAM_TOTAL}개 안전 URL 스캔 시작 (XSS)"
-             echo "⚡ 세팅: --only-discovery / --worker 50 / --timeout 2"
-             echo "========================================================="
-             
-             timeout 15m dalfox file param_urls.txt \
-               --only-discovery --worker 50 --timeout 2 \
-               --skip-mining-dom --skip-mining-dict --skip-bav --skip-grepping \
-               --format json | tee strike_out/dalfox_results_${{ matrix.group }}.json || true
-          else
-             touch strike_out/dalfox_results_${{ matrix.group }}.json
-          fi
+          echo "========================================================="
+          echo "ℹ️ XSS (Dalfox) 탐지가 임시 비활성화 되었습니다."
+          echo "========================================================="
+          # 에러 방지용 빈 파일 생성
+          touch strike_out/dalfox_results_${{ matrix.group }}.json
           
           # =========================================================
-          # 🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 포인트 초고속 탐색
+          # 🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 포인트 초고속 탐색 (임시 비활성화)
           # =========================================================
-          if [ "$PARAM_TOTAL" -gt 0 ]; then
-             echo "========================================================="
-             echo "🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 취약점 포인트 퀵 스캔 시작"
-             echo "🎯 대상: 파라미터가 포함된 ${PARAM_TOTAL}개 안전 URL"
-             echo "========================================================="
-             
-             # ✅ [패치] -je 대신 -j -o 옵션을 사용하여 JSON Lines 포맷으로 출력 및 파싱 오류 완벽 해결
-             timeout 30m nuclei -l param_urls.txt \
-               -dast \
-               -tags sqli,blind,timebased,boolean,ssti \
-               -rl 30 -c 5 \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               -j -o strike_out/nuclei_dast_points_${{ matrix.group }}.json \
-               -silent || true
-               
-             # ✅ [패치] jq 오류 해결 및 깔끔한 출력 로직 적용
-             cat strike_out/nuclei_dast_points_${{ matrix.group }}.json 2>/dev/null | jq -r 'select(.info.name != null) | "\(.info.name)||\(."matched-at" // .url // .host)"' | awk -F '||' '{print "    🎯 \033[31;1m[DAST 탐지!]\033[0m 취약 포인트 포착 (" $1 "): " $2; fflush()}' || true
-          else
-             touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
-          fi
-          
-          rm -f param_raw_urls.txt
+          echo "========================================================="
+          echo "ℹ️ SQLi, SSTI (Nuclei DAST) 탐지가 임시 비활성화 되었습니다."
+          echo "========================================================="
+          # 에러 방지용 빈 파일 생성
+          touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
           
           # =========================================================
-          # 🥷 [Phase 2] Nuclei 정밀 타격 (초경량/고속 모드)
+          # 🥷 [Phase 2] Nuclei 정밀 타격 (초경량/고속 모드 - 설정 및 관리자화면 등)
           # =========================================================
           echo "========================================================="
           echo "🥷 [Phase 2] Nuclei 스텔스 정밀 타격 시작 (초경량 템플릿)"
@@ -264,7 +234,6 @@ jobs:
                  mv alive_urls_sampled.txt alive_urls.txt
              fi
              
-             # ✅ [패치] 일반 스캔 결과도 -je 대신 -j -o 로 변경하여 엑셀 파이썬 스크립트와의 호환성 극대화
              timeout 120m nuclei -l alive_urls.txt \
                -t http/exposures/configs/,http/default-logins/,http/miscellaneous/ \
                -tags config,panel,exposure,swagger,docs \
