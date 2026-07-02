@@ -23,7 +23,6 @@ collect_master() {
         echo "$base_domain" >> "results/${safe_domain}_subs.txt"
         sort -u "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt"
         
-        # 💡 [방어 1] 서브도메인이 너무 많으면 메모리가 터지므로 1000개로 컷트
         shuf -n 1000 "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt" 2>/dev/null || true
         
         cat "results/${safe_domain}_subs.txt" | timeout 5m gau > "results/${safe_domain}_gau.txt" 2>/dev/null
@@ -40,22 +39,22 @@ collect_master() {
     echo "[+] [${raw_domain}] 🕷️ Katana 지능형 크롤링 준비..."
     cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" 2>/dev/null | sort -u > "results/${safe_domain}_raw_seed.txt"
     
-    # 💡 [방어 2] uro 처리 중 OOM 방지 (최대 5만개만 넣기)
     shuf -n 50000 "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_raw_seed.txt" 2>/dev/null || true
     uro -i "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_clean_seed.txt"
 
-    # 💡 [방어 3] Katana는 무거우므로 300개만 샘플링하여 크롤링
     shuf -n 300 "results/${safe_domain}_clean_seed.txt" > "results/${safe_domain}_katana_seed.txt" 2>/dev/null || cp "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
 
-    # 💡 Katana Depth를 -d 3 으로 획기적 확장
     echo "  -> [Katana] Depth 3 크롤링 시작 (최대 15분 타임아웃)..."
     timeout 15m katana -list "results/${safe_domain}_katana_seed.txt" -d 3 -jc -kf all -c 2 -rl 50 -ct 10 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
     grep -iE "$regex" "results/${safe_domain}_katana.txt" | sort -u -o "results/${safe_domain}_katana.txt"
     
     rm -f "results/${safe_domain}_raw_seed.txt" "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
 
-    # JS 파일 추출 (Katana가 찾은 JS도 모두 포함)
-    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" "results/${safe_domain}_katana.txt" 2>/dev/null | grep -E '\.js($|\?)' 2>/dev/null | sort -u > "results/${safe_domain}_js_raw_list.txt"
+    # 💡 [핵심 패치 1] 무의미한 오픈소스 JS 라이브러리를 강력한 정규식으로 차단하여 고가치 JS 파일만 추출
+    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" "results/${safe_domain}_katana.txt" 2>/dev/null \
+        | grep -E '\.js($|\?)' 2>/dev/null \
+        | grep -vE -i '(jquery|bootstrap|vue|react|angular|moment|lodash|underscore|vendor|node_modules|polyfill|webpack)' \
+        | sort -u > "results/${safe_domain}_js_raw_list.txt"
     
     > "results/${safe_domain}_js_master_list.txt"
     while read -r url; do
@@ -68,7 +67,7 @@ collect_master() {
     done < "results/${safe_domain}_js_raw_list.txt" | sort -u > "results/${safe_domain}_js_master_list.txt"
 
     local total_js=$(wc -l < "results/${safe_domain}_js_master_list.txt")
-    echo "  -> [성공] 총 ${total_js}개의 자바스크립트(JS) 소스 경로를 식별했습니다."
+    echo "  -> [성공] 필터링 된 ${total_js}개의 고가치 자바스크립트(JS) 소스 경로 식별"
 
     if [ "$total_js" -gt 0 ]; then
         if [ -f "global_js_db.txt" ]; then
@@ -88,7 +87,6 @@ collect_master() {
 
             shuf "results/${safe_domain}_js_new_list.txt" > "results/${safe_domain}_js_urls_target.txt"
             
-            # 💡 다운로드 한도를 500개로 상향 조정 (최대 500개의 JS 파일 다운로드)
             local MAX_SUCCESS=500
             local success_cnt=0
             local fail_cnt=0
@@ -114,7 +112,6 @@ collect_master() {
 }
 
 export -f collect_master
-# 💡 가상머신 터짐(OOM) 방지를 위해 동시 실행 프로세스를 2개로 고정
 xargs -P 2 -n 1 -a "$TARGET_FILE" -I {} bash -c 'collect_master "{}"'
 
 rm -f targets_group*
