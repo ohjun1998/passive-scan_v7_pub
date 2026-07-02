@@ -247,10 +247,10 @@ jobs:
           rm -f param_raw_urls.txt
           
           # =========================================================
-          # 🥷 [Phase 2] Nuclei 정밀 타격 (Base URL 기반 안전 모드)
+          # 🥷 [Phase 2] Nuclei 정밀 타격 (Base URL 기반 안전 & 고속 모드)
           # =========================================================
           echo "========================================================="
-          echo "🥷 [Phase 2] Nuclei 스텔스 정밀 타격 시작 (안전 템플릿)"
+          echo "🥷 [Phase 2] Nuclei 스텔스 가속 정밀 타격 시작 (안전 템플릿)"
           
           if [ "$ALIVE_TOTAL" -gt 0 ]; then
              # 루트 도메인 추출 (중복 스캔 완벽 제거)
@@ -261,10 +261,10 @@ jobs:
              echo "🛡️ 로직: 서버에 무해한 노출(Exposure), 토큰(Token), 설정(Config) 스캔"
              echo "========================================================="
              
-             N_RL=20
-             N_C=4
+             # 💡 [핵심 최적화] IP 차단을 우회하며 속도를 2.5배 펌핑 (RPS 50, 동시성 10)
+             N_RL=50
+             N_C=10
              
-             # 💡 [핵심 패치] takeovers 태그를 지우고 exposure, token, config, panel 만 남겨 정밀 정적 분석 고도화
              timeout 120m nuclei -l base_urls.txt \
                -tags exposure,token,config,panel \
                -rl $N_RL -c $N_C \
