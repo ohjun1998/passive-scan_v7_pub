@@ -8,9 +8,6 @@ permissions:
   actions: read 
 
 jobs:
-  # ==========================================
-  # [Job 1] 20대 노드 풀가동 (논스톱 수집 및 오프라인 분석)
-  # ==========================================
   recon-node:
     runs-on: ubuntu-latest
     strategy:
@@ -82,9 +79,6 @@ jobs:
         path: encrypted_final/node_results_${{ matrix.group }}.tar.gz.gpg
         retention-days: 1
 
-  # ==========================================
-  # [Job 2] 글로벌 믹서기 (단 1대) - 타겟 병합, 중복제거, 셔플
-  # ==========================================
   global-mixer:
     runs-on: ubuntu-latest
     needs: recon-node
@@ -143,9 +137,6 @@ jobs:
         path: encrypted_chunks/global_chunks.tar.gz.gpg
         retention-days: 1
 
-  # ==========================================
-  # [Job 3] Httpx & Dalfox & Nuclei 스텔스 타격대 (20대 풀가동)
-  # ==========================================
   httpx-nuclei-strike:
     runs-on: ubuntu-latest
     needs: global-mixer
@@ -231,16 +222,14 @@ jobs:
              echo "🎯 대상: 파라미터가 포함된 ${PARAM_TOTAL}개 안전 URL"
              echo "========================================================="
              
-             # ✅ [핵심 패치] JSON 포맷 오류 방지를 위해 JSON Lines(-j) 로 저장
              timeout 30m nuclei -l param_urls.txt \
                -dast \
                -tags sqli,blind,timebased,boolean,ssti \
                -rl 30 -c 5 \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
                -j -o strike_out/nuclei_dast_points_${{ matrix.group }}.json \
                -silent || true
                
-             # JQ 에러 방지용 파싱 로직 적용
              cat strike_out/nuclei_dast_points_${{ matrix.group }}.json 2>/dev/null | jq -c -r 'select(.info.name != null) | "\(.info.name)||\(."matched-at" // .url // .host)"' | awk -F '||' '{print "    🎯 \033[31;1m[DAST 탐지!]\033[0m 취약 포인트 포착 (" $1 "): " $2; fflush()}' || true
           else
              touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
@@ -252,28 +241,27 @@ jobs:
           # 🥷 [Phase 2] Nuclei 정밀 타격 (Base URL 기반 고속 모드)
           # =========================================================
           echo "========================================================="
-          echo "🥷 [Phase 2] Nuclei 스텔스 정밀 타격 시작 (초경량 템플릿)"
+          echo "🥷 [Phase 2] Nuclei 스텔스 정밀 타격 시작"
           
           if [ "$ALIVE_TOTAL" -gt 0 ]; then
-             # ✅ [핵심 패치] 전체 URL에서 루트 도메인(Base URL)만 추출하여 중복 제거 스캔 (시간 단축 극대화)
+             # 루트 도메인 추출 (중복 스캔 완벽 제거)
              cat alive_urls.txt | awk -F/ '{print $1"//"$3}' | sort -u > base_urls.txt
              BASE_TOTAL=$(wc -l < base_urls.txt)
              
              echo "🎯 대상: Httpx 생존 확인된 '루트 서브도메인' ${BASE_TOTAL}개"
-             echo "🛡️ 로직: 서브도메인 단위(루트 경로) Config, Default-logins 스캔"
+             echo "🛡️ 로직: 서브도메인 단위(루트 경로) 안전한 CVE & Token & Config 스캔"
              echo "========================================================="
              
-             N_RL=15
-             N_C=3
+             N_RL=20
+             N_C=4
              
+             # 💡 [핵심 패치 2] 족쇄 해제: cve, exposure, token, vuln 등 고가치 태그 전면 개방
              timeout 120m nuclei -l base_urls.txt \
-               -t http/exposures/configs/,http/default-logins/,http/miscellaneous/ \
-               -tags config,panel,exposure,swagger,docs \
+               -tags cve,exposure,token,vuln,config,panel \
                -rl $N_RL -c $N_C \
                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
                -j -o strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
           else
-             echo "========================================================="
              touch strike_out/nuclei_results_${{ matrix.group }}.json
           fi
         else
@@ -295,9 +283,6 @@ jobs:
         path: encrypted_strike/strike_results_${{ matrix.group }}.tar.gz.gpg
         retention-days: 1
 
-  # ==========================================
-  # [Job 4] 엑셀 사출 (단 1대)
-  # ==========================================
   excel-reporter:
     runs-on: ubuntu-latest
     needs: [recon-node, httpx-nuclei-strike]
