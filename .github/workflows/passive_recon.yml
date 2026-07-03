@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   # ==========================================
-  # [Job 1] 20대 노드 풀가동 (논스톱 수집 및 오프라인 분석)
+  # [Job 1] 20대 노드 풀가동 (아카이브 URL 추출 및 오프라인 분석)
   # ==========================================
   recon-node:
     runs-on: ubuntu-latest
@@ -28,13 +28,12 @@ jobs:
       uses: actions/setup-go@v5
       with: { go-version: 'stable' }
 
-    - name: 핵심 정찰 도구 설치 (gau, waybackurls, jsluice, trufflehog, subfinder, katana)
+    - name: 아카이브 수집 도구 설치 (gau, waybackurls, jsluice, trufflehog, subfinder)
       run: |
         go install github.com/lc/gau/v2/cmd/gau@latest
         go install github.com/tomnomnom/waybackurls@latest
         go install github.com/BishopFox/jsluice/cmd/jsluice@latest
         go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-        go install github.com/projectdiscovery/katana/cmd/katana@latest
         pip install uro
         sudo apt-get install jq -y
         curl -sSfL --retry 5 --retry-delay 5 "https://github.com/trufflesecurity/trufflehog/releases/download/v3.82.0/trufflehog_3.82.0_linux_amd64.tar.gz" -o trufflehog.tar.gz
@@ -63,7 +62,7 @@ jobs:
           cd ..
         fi
 
-    - name: Phase 1 & 2 논스톱 실행 (수집 ➡️ 다운로드 ➡️ 오프라인 파싱)
+    - name: Phase 1 & 2 아카이브 정찰 가동 (수집 ➡️ 다운로드 ➡️ 오프라인 파싱)
       run: |
         chmod +x *.sh
         ./collect_urls.sh ${{ matrix.group }}
@@ -83,7 +82,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 2] 글로벌 믹서기 (단 1대) - 타겟 병합, 중복제거, 셔플
+  # [Job 2] 글로벌 믹서기 (단 1대) - 수집된 아카이브 데이터 병합 및 정렬
   # ==========================================
   global-mixer:
     runs-on: ubuntu-latest
@@ -144,7 +143,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 3] Httpx & Dalfox & Nuclei 스텔스 타격대 (20대 풀가동)
+  # [Job 3] 아카이브 URL 현재 실시간 생존 검사대 (20대 분산 가동)
   # ==========================================
   httpx-nuclei-strike:
     runs-on: ubuntu-latest
@@ -161,11 +160,9 @@ jobs:
       uses: actions/setup-go@v5
       with: { go-version: 'stable' }
 
-    - name: 최신 Httpx, Nuclei, Dalfox 및 uro 설치
+    - name: Httpx 및 uro 설치
       run: |
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-        go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-        go install github.com/hahwul/dalfox/v2@latest
         pip install uro
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
@@ -185,102 +182,28 @@ jobs:
           mv chunks/clean_chunk.txt chunks/chunk_${{ matrix.group }}.txt
         fi
 
-    - name: 다이내믹 스텔스 Httpx & Dalfox & Nuclei 타격 개시
+    - name: 실시간 생존 여부(Httpx) 프로빙 개시
       run: |
         mkdir -p strike_out
         if [ -s chunks/chunk_${{ matrix.group }}.txt ]; then
           TOTAL=$(wc -l < chunks/chunk_${{ matrix.group }}.txt)
           
           echo "========================================================="
-          echo "🤖 [Phase 1] Httpx 생존 검사 시작 (노드 ${{ matrix.group }})"
+          echo "🤖 [Httpx Check] 아카이브 추출 URL 생존 유무 전수 검사 (${{ matrix.group }})"
+          echo "🛡️ 극저소음 안전 모드: 노드당 초당 2회 제한 (글로벌 40~50 RPS) / 단일 쓰레드"
           echo "========================================================="
           
-          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 20 -t 5 -timeout 4 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Httpx (" NR "/" t ") " $0; fflush()}'
-          
-          cat strike_out/httpx_results_${{ matrix.group }}.json | jq -r 'select(.status_code != null) | .url' > alive_urls.txt
-          ALIVE_TOTAL=$(wc -l < alive_urls.txt)
-          
-          # =========================================================
-          # 🎣 [Phase 1.5] Dalfox 스텔스 XSS 반사 퀵 스캔 개시
-          # =========================================================
-          grep '=' alive_urls.txt > param_raw_urls.txt || true
-          grep -v -iE "(delete|remove|clear|destroy|update|edit|modify|write|insert|post|create|join|change|leave|quit|sign)" param_raw_urls.txt > param_urls.txt || true
-          
-          PARAM_TOTAL=$(wc -l < param_urls.txt)
-          
-          if [ "$PARAM_TOTAL" -gt 0 ]; then
-             echo "========================================================="
-             echo "🎯 데이터 변조 위험이 완벽히 제거된 ${PARAM_TOTAL}개 안전 URL 스캔 시작 (XSS)"
-             echo "⚡ 세팅: --only-discovery / --worker 50 / --timeout 2"
-             echo "========================================================="
-             
-             timeout 15m dalfox file param_urls.txt \
-               --only-discovery --worker 50 --timeout 2 \
-               --skip-mining-dom --skip-mining-dict --skip-bav --skip-grepping \
-               --format json | tee strike_out/dalfox_results_${{ matrix.group }}.json || true
-          else
-             touch strike_out/dalfox_results_${{ matrix.group }}.json
-          fi
-          
-          # =========================================================
-          # 🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 포인트 초고속 탐색
-          # =========================================================
-          if [ "$PARAM_TOTAL" -gt 0 ]; then
-             echo "========================================================="
-             echo "🛢️ [Phase 1.8] Nuclei DAST: SQLi, SSTI 취약점 포인트 퀵 스캔 시작"
-             echo "🎯 대상: 파라미터가 포함된 ${PARAM_TOTAL}개 안전 URL"
-             echo "========================================================="
-             
-             timeout 30m nuclei -l param_urls.txt \
-               -dast \
-               -tags sqli,blind,timebased,boolean,ssti \
-               -rl 30 -c 5 \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               -j -o strike_out/nuclei_dast_points_${{ matrix.group }}.json \
-               -silent || true
-               
-             cat strike_out/nuclei_dast_points_${{ matrix.group }}.json 2>/dev/null | jq -c -r 'select(.info.name != null) | "\(.info.name)||\(."matched-at" // .url // .host)"' | awk -F '||' '{print "    🎯 \033[31;1m[DAST 탐지!]\033[0m 취약 포인트 포착 (" $1 "): " $2; fflush()}' || true
-          else
-             touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
-          fi
-          
-          rm -f param_raw_urls.txt
-          
-          # =========================================================
-          # 🥷 [Phase 2] Nuclei 정밀 타격 (Base URL 기반 안전 & 고속 모드)
-          # =========================================================
-          echo "========================================================="
-          echo "🥷 [Phase 2] Nuclei 스텔스 가속 정밀 타격 시작 (안전 템플릿)"
-          
-          if [ "$ALIVE_TOTAL" -gt 0 ]; then
-             # 루트 도메인 추출 (중복 스캔 완벽 제거)
-             cat alive_urls.txt | awk -F/ '{print $1"//"$3}' | sort -u > base_urls.txt
-             BASE_TOTAL=$(wc -l < base_urls.txt)
-             
-             echo "🎯 대상: Httpx 생존 확인된 '루트 서브도메인' ${BASE_TOTAL}개"
-             echo "🛡️ 로직: 서버에 무해한 노출(Exposure), 토큰(Token), 설정(Config) 스캔"
-             echo "========================================================="
-             
-             # 💡 [핵심 최적화] IP 차단을 우회하며 속도를 2.5배 펌핑 (RPS 50, 동시성 10)
-             N_RL=50
-             N_C=10
-             
-             timeout 120m nuclei -l base_urls.txt \
-               -tags exposure,token,config,panel \
-               -rl $N_RL -c $N_C \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               -j -o strike_out/nuclei_results_${{ matrix.group }}.json -silent || true
-          else
-             touch strike_out/nuclei_results_${{ matrix.group }}.json
-          fi
+          # ✅ [초안전 모드] -rl 2 (초당 2회 제한), -t 1 (단일 쓰레드)로 극단적 부하 최소화
+          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 2 -t 1 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
-          touch strike_out/dalfox_results_${{ matrix.group }}.json
-          touch strike_out/nuclei_dast_points_${{ matrix.group }}.json
-          touch strike_out/nuclei_results_${{ matrix.group }}.json
         fi
+        
+        # 엑셀 오동작 방지용 더미 빈 파일 터치 생성 (스캐너 삭제 대응)
+        touch strike_out/dalfox_results_${{ matrix.group }}.json
+        touch strike_out/nuclei_results_${{ matrix.group }}.json
 
-    - name: 타격 결과 암호화 (Httpx + Dalfox + Nuclei)
+    - name: 타격 결과 암호화 (Httpx)
       run: |
         mkdir -p encrypted_strike
         tar -czf - -C strike_out/ . 2>/dev/null | gpg --symmetric --batch --yes --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" --cipher-algo AES256 --output encrypted_strike/strike_results_${{ matrix.group }}.tar.gz.gpg
@@ -293,7 +216,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 4] 엑셀 사출 (단 1대)
+  # [Job 4] 생존 분석 기반 컬러 대시보드 엑셀 사출
   # ==========================================
   excel-reporter:
     runs-on: ubuntu-latest
