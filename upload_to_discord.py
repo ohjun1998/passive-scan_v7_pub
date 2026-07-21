@@ -1,57 +1,46 @@
-#!/usr/bin/env python3
-import os
-import glob
 import requests
-from openpyxl import load_workbook
+import os
 
-def upload_report_safe_engine():
+def send_discord_notification():
     webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
     if not webhook_url:
-        print("[-] Error: DISCORD_WEBHOOK_URL variable is missing.")
+        print("[-] DISCORD_WEBHOOK_URL 환경 변수가 설정되지 않았습니다.")
         return
 
-    files = glob.glob('reports/passive_recon_report_*.xlsx')
-    if not files:
-        print("[-] Error: No Excel report asset found in reports/ folder.")
-        return
-    
-    latest_file = max(files, key=os.path.getmtime)
-    file_name = os.path.basename(latest_file)
+    new_subs = []
+    # 위 txt_to_excel.py에서 생성한 신규 서브도메인 목록 텍스트 파일 읽기
+    if os.path.exists('reports/new_subdomains.txt'):
+        with open('reports/new_subdomains.txt', 'r', encoding='utf-8') as f:
+            new_subs = [line.strip() for line in f if line.strip()]
+
+    if new_subs:
+        # 메시지가 너무 길어지는 것을 방지하기 위해 최대 15개까지만 노출
+        sub_text = "\n".join([f"🔹 {s}" for s in new_subs[:15]])
+        if len(new_subs) > 15:
+            sub_text += f"\n\n... 외 {len(new_subs)-15}개 더 발견됨"
+        
+        embed_color = 15158332 # 경고/알림을 의미하는 Red/Orange 색상
+        embed_title = "🚨 새로운 서브도메인 발견!"
+        embed_desc = f"```\n{sub_text}\n```\n상세 내역과 취약점 분석 결과는 첨부된 **보안 엑셀 리포트**를 확인하세요."
+    else:
+        embed_color = 3066993 # 안전을 의미하는 Green 색상
+        embed_title = "✅ 일일 정찰 보고서 완료"
+        embed_desc = "이번 스캔에서는 새로 발견된 서브도메인이 없습니다."
+
+    payload = {
+        "content": "🚀 **Passive Reconnaissance 분산 스캔 엔진 가동 완료**",
+        "embeds": [{
+            "title": embed_title,
+            "description": embed_desc,
+            "color": embed_color
+        }]
+    }
     
     try:
-        wb = load_workbook(latest_file, read_only=True)
-        total_sheets = len(wb.sheetnames)
-        active_domains_count = max(total_sheets - 2, 0)
+        requests.post(webhook_url, json=payload)
+        print("[+] 디스코드 알림 전송 완료")
     except Exception as e:
-        print(f"[-] Warning: Failed to parse excel sheet count: {e}")
-        active_domains_count = "정상"
+        print(f"[-] 디스코드 알림 전송 실패: {e}")
 
-    total_new_count = "0"
-    if os.path.exists('reports/new_count.txt'):
-        try:
-            with open('reports/new_count.txt', 'r') as f:
-                total_new_count = f.read().strip()
-        except: pass
-
-    print(f"[+] Transmitting pure EXCEL workbook ({file_name}) to Discord...", flush=True)
-    with open(latest_file, 'rb') as f:
-        payload = {
-            # 💡 [멘트 변경] 디스코드 봇이 포스트맨 컬렉션 생성 사실을 알려줍니다!
-            'content': (
-                f"🚀 **[정찰 완료 - 통합 마스터 엑셀 보고서]**\n"
-                f"🔥 **새로 발견된 엔드포인트:** `{total_new_count}개`의 신규 URL이 추가되었습니다!\n"
-                f"🔒 **{active_domains_count}개 도메인**에 대한 관제 정보가 매핑되었습니다.\n"
-                f"📊 아래 엑셀 파일을 터치하여 상세 엔드포인트를 확인하세요.\n"
-                f"⚡ **[TIP]** 깃허브 Actions의 다운로드 금고(ZIP) 안에 Burp Suite 연동을 위한 **`Postman Collection (JSON)`** 스펙 파일이 함께 배송되었습니다!"
-            )
-        }
-        files_payload = {'file': (file_name, f, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
-        response = requests.post(webhook_url, data=payload, files=files_payload)
-        
-    if response.status_code in [200, 204]:
-        print("[+] [SUCCESS] Native single-packet Discord transmission complete!", flush=True)
-    else:
-        print(f"[-] Discord error code: {response.status_code}, {response.text}", flush=True)
-
-if __name__ == '__main__':
-    upload_report_safe_engine()
+if __name__ == "__main__":
+    send_discord_notification()
