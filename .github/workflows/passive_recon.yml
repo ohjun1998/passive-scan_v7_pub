@@ -2,6 +2,11 @@ name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 
 on:
   workflow_dispatch:
+  schedule:
+    # GitHub Actions 정각 병목 현상을 피해 17분에 실행되도록 설정
+    # KST 기준: 오전 4시 17분 (UTC 19:17), 오후 4시 17분 (UTC 07:17)
+    - cron: '17 19 * * *'
+    - cron: '17 7 * * *'
 
 permissions:
   contents: write
@@ -145,7 +150,7 @@ jobs:
   # ==========================================
   # [Job 3] 아카이브 URL 현재 실시간 생존 검사대 (20대 분산 가동)
   # ==========================================
-  httpx-nuclei-strike:
+  httpx-live-check:
     runs-on: ubuntu-latest
     needs: global-mixer
     strategy:
@@ -198,10 +203,6 @@ jobs:
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
         fi
-        
-        # 엑셀 오동작 방지용 더미 빈 파일 터치 생성 (스캐너 삭제 대응)
-        touch strike_out/dalfox_results_${{ matrix.group }}.json
-        touch strike_out/nuclei_results_${{ matrix.group }}.json
 
     - name: 타격 결과 암호화 (Httpx)
       run: |
@@ -220,7 +221,7 @@ jobs:
   # ==========================================
   excel-reporter:
     runs-on: ubuntu-latest
-    needs: [recon-node, httpx-nuclei-strike]
+    needs: [recon-node, httpx-live-check]
     steps:
     - name: 저장소 체크아웃
       uses: actions/checkout@v4
@@ -272,7 +273,7 @@ jobs:
     - name: 최종 리포트 금고 봉인
       run: |
         cd reports
-        zip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip passive_recon_report_*.xlsx recon_history.db postman_collection_*.json
+        zip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip passive_recon_report_*.xlsx recon_history.db postman_collection_*.json new_subdomains.txt || true
         cd ..
 
     - name: 깃허브 아티팩트에 저장
