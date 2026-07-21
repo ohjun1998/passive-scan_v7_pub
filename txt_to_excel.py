@@ -146,7 +146,6 @@ def build_advanced_excel_report():
     cursor.execute("CREATE TABLE IF NOT EXISTS master_urls (url TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS downloaded_js (url TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS historical_subdomains (subdomain TEXT PRIMARY KEY)")
-    # 하위 호환성을 위해 katana_tot 컬럼은 유지하되 사용하지 않음
     cursor.execute('''CREATE TABLE IF NOT EXISTS target_stats (
         target TEXT PRIMARY KEY,
         passive_tot INTEGER DEFAULT 0,
@@ -195,7 +194,7 @@ def build_advanced_excel_report():
         elif 'trufflehog' in filename: source_tool = 'TruffleHog'
         elif 'waybackurls' in filename: source_tool = 'Waybackurls'
         elif 'gau' in filename: source_tool = 'GAU'
-        else: continue # Katana 등 기타 무시
+        else: continue
 
         try:
             with open(file_path, 'r', errors='ignore') as f:
@@ -260,7 +259,6 @@ def build_advanced_excel_report():
                     status_codes[data.get('url')] = data.get('status_code', 'Dead')
         except: pass
 
-    # AI 랭킹을 위한 타겟 수집
     gemini_key = os.environ.get('GEMINI_API_KEY')
     ai_ranked_results = []
     
@@ -280,7 +278,6 @@ def build_advanced_excel_report():
             
             if ai_ranked_results:
                 ai_ranked_results.sort(key=lambda x: x.get('probability', 0), reverse=True)
-                print(f"[+] Gemini 분석 완료! {len(ai_ranked_results)}개 표적 시트 작성 준비.")
 
     now_str = datetime.now().strftime("%Y%m%d_%H%M")
     
@@ -322,6 +319,8 @@ def build_advanced_excel_report():
 
     cursor.execute("SELECT subdomain FROM historical_subdomains")
     previous_subdomains = {row[0] for row in cursor.fetchall()}
+    
+    global_new_subdomains = set() # ✨ 신규 서브도메인 저장용 셋
 
     for raw_target, url_map in matrix_data.items():
         cursor.execute("SELECT passive_tot FROM target_stats WHERE target = ?", (raw_target,))
@@ -363,6 +362,11 @@ def build_advanced_excel_report():
 
         current_subdomains = {urlparse(u).netloc for u in url_map.keys()}
         new_subdomains = current_subdomains - previous_subdomains
+        
+        # 첫 실행이 아닐 때만 신규 서브도메인을 알림 리스트에 추가
+        if today_passive_count > 0 and bool(previous_subdomains):
+            global_new_subdomains.update(new_subdomains)
+
         sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains) and today_passive_count > 0) else "-"
         
         g_passive_tot += new_passive_tot; g_passive_new += domain_new_count
@@ -517,6 +521,12 @@ def build_advanced_excel_report():
             cursor.executemany("INSERT OR IGNORE INTO historical_subdomains (subdomain) VALUES (?)", [(s,) for s in today_subs])
         conn.commit()
     conn.close()
+    
+    # ✨ 신규 서브도메인이 존재하면 디스코드 배송용으로 텍스트 파일로 저장
+    if global_new_subdomains:
+        with open('reports/new_subdomains.txt', 'w', encoding='utf-8') as f:
+            for sub in sorted(list(global_new_subdomains)):
+                f.write(sub + '\n')
 
     if dash_idx > 2:
         ws_dash.append([
