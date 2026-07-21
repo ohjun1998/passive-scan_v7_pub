@@ -1,3 +1,19 @@
+요청하신 대로 대시보드에서 서브도메인의 개수를 우측의 URL 표시 방식과 동일하게 **누적(전체) 개수 / 신규 개수** 형태로 한눈에 볼 수 있도록 txt_to_excel.py 코드를 수정했습니다.
+이렇게 수정하면 현재 스캔된 전체 서브도메인 풀(Pool) 규모와, 그중 오늘 새로 튀어나온(New) 도메인의 비율을 훨씬 직관적으로 비교할 수 있습니다.
+### 📊 엑셀 대시보드 출력 예시 (변경 전/후 비교)
+**[변경 전]**
+ * 헤더: 🌟 신규 서브 (개수)
+ * 데이터 (신규 발견 시): 🌟 3개 신규 (핑크색 하이라이트)
+ * 데이터 (신규 없을 시): -
+ * 총 합계: 🌟 총 3개
+**[변경 후]**
+ * 헤더: **🌟 서브도메인 (누적/신규)** *(URL 컬럼과 통일성을 위해 헤더명 수정)*
+ * 데이터 (신규 발견 시): **25 / 3** (누적 25개 중 신규 3개, **핑크색 하이라이트 유지**)
+ * 데이터 (신규 없을 시): **25 / 0** (회색 기본 텍스트)
+ * 총 합계: **150 / 3**
+### 💻 수정된 txt_to_excel.py 전체 소스코드
+아래 코드를 복사하여 기존 txt_to_excel.py 파일에 덮어쓰시면 됩니다.
+```python
 #!/usr/bin/env python3
 import os
 import glob
@@ -300,7 +316,7 @@ def build_advanced_excel_report():
     ws_dash.title = "Summary Dashboard"
     
     dash_headers = [
-        "No", "타겟 도메인", "🌟 신규 서브 (개수)", "📊 누적 / 🔥 신규 URL", 
+        "No", "타겟 도메인", "🌟 서브도메인 (누적/신규)", "📊 누적 / 🔥 신규 URL", 
         "jsluice (누적 / 신규)", "TruffleHog 탐지",
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
@@ -321,6 +337,7 @@ def build_advanced_excel_report():
     previous_subdomains = {row[0] for row in cursor.fetchall()}
     
     global_new_subdomains = set() # ✨ 신규 서브도메인 저장용 셋
+    global_current_subdomains = set() # ✨ 전체 누적 서브도메인 저장용 셋 (총계산용)
 
     for raw_target, url_map in matrix_data.items():
         cursor.execute("SELECT passive_tot FROM target_stats WHERE target = ?", (raw_target,))
@@ -360,18 +377,25 @@ def build_advanced_excel_report():
             elif status in ['401', '403']: count_40x += 1
             elif status.startswith('5'): count_50x += 1
 
-        current_subdomains = {urlparse(u).netloc for u in url_map.keys()}
+        # 도메인 파싱 시 None 또는 빈 문자열 방지
+        current_subdomains = {urlparse(u).netloc for u in url_map.keys() if urlparse(u).netloc}
         new_subdomains = current_subdomains - previous_subdomains
         
+        # 전체 도메인 풀에 현재 찾은 서브도메인 병합
+        global_current_subdomains.update(current_subdomains)
+
         # 첫 실행이 아닐 때만 신규 서브도메인을 알림 리스트에 추가
         if today_passive_count > 0 and bool(previous_subdomains):
             global_new_subdomains.update(new_subdomains)
 
-        # ✨ 여기서 개수를 포함하여 문자열 생성
-        if bool(new_subdomains) and bool(previous_subdomains) and today_passive_count > 0:
-            sub_dash_mark = f"🌟 {len(new_subdomains)}개 신규"
+        # ✨ 수정된 부분: 서브도메인 (기존+누적 / 신규) 카운트 생성 로직
+        total_sub_count = len(current_subdomains)
+        new_sub_count = len(new_subdomains) if bool(previous_subdomains) else 0
+
+        if today_passive_count > 0:
+            sub_dash_mark = f"{total_sub_count} / {new_sub_count}"
         else:
-            sub_dash_mark = "-"
+            sub_dash_mark = "0 / 0"
         
         g_passive_tot += new_passive_tot; g_passive_new += domain_new_count
         g_jsluice_tot += new_jsluice_tot; g_jsluice_new += jsluice_new
@@ -396,7 +420,7 @@ def build_advanced_excel_report():
                     cell.hyperlink = f"#'{sheet_title}'!A1"
                     cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
                 else: cell.font = Font(name='Malgun Gothic', color='777777', italic=True)
-            elif c == 3 and "신규" in sub_dash_mark: # 문자열 포함 여부로 변경
+            elif c == 3 and new_sub_count > 0: # ✨ 신규 서브도메인이 1개라도 있으면 핑크색 하이라이트
                 cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
             if today_passive_count > 0:
@@ -527,15 +551,18 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
     
-    # ✨ 신규 서브도메인이 존재하면 디스코드 배송용으로 텍스트 파일로 저장
+    # 신규 서브도메인이 존재하면 디스코드 배송용으로 텍스트 파일로 저장
     if global_new_subdomains:
         with open('reports/new_subdomains.txt', 'w', encoding='utf-8') as f:
             for sub in sorted(list(global_new_subdomains)):
                 f.write(sub + '\n')
 
     if dash_idx > 2:
-        # ✨ 대시보드 하단 총합계에도 신규 서브도메인 전체 개수 표시
-        total_sub_mark = f"🌟 총 {len(global_new_subdomains)}개" if global_new_subdomains else "-"
+        # ✨ 대시보드 하단 총합계에도 누적 / 신규 서브도메인 전체 개수 표시
+        g_sub_tot = len(global_current_subdomains)
+        g_sub_new = len(global_new_subdomains)
+        total_sub_mark = f"{g_sub_tot} / {g_sub_new}"
+        
         ws_dash.append([
             "", "📊 총 합계 (Total)", total_sub_mark, 
             f"{g_passive_tot} / {g_passive_new}", 
@@ -555,8 +582,8 @@ def build_advanced_excel_report():
             if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)", "타겟 URL"]: sheet.column_dimensions[col_letter].width = 80  
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드"]: sheet.column_dimensions[col_letter].width = 55  
-            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)"]: sheet.column_dimensions[col_letter].width = 24
-            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🌟 신규 서브 (개수)", "🔮 잠재적 위험 확률"]: sheet.column_dimensions[col_letter].width = 18
+            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)"]: sheet.column_dimensions[col_letter].width = 24
+            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
@@ -571,3 +598,5 @@ def build_advanced_excel_report():
 
 if __name__ == '__main__':
     build_advanced_excel_report()
+
+```
