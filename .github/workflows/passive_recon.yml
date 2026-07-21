@@ -195,11 +195,11 @@ jobs:
           
           echo "========================================================="
           echo "🤖 [Httpx Check] 아카이브 추출 URL 생존 유무 전수 검사 (${{ matrix.group }})"
-          echo "🛡️ 극저소음 안전 모드: 노드당 초당 2회 제한 (글로벌 40~50 RPS) / 단일 쓰레드"
+          echo "⚖️ 밸런스 모드: 노드당 초당 10회 제한 (글로벌 200 RPS) / 5 쓰레드"
           echo "========================================================="
           
-          # ✅ [초안전 모드] -rl 2 (초당 2회 제한), -t 1 (단일 쓰레드)로 극단적 부하 최소화
-          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 2 -t 1 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
+          # ✅ [밸런스 모드] -rl 10 (초당 10회 제한), -t 5 (5 쓰레드)로 효율 및 속도 향상
+          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 10 -t 5 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
         fi
