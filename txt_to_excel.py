@@ -300,7 +300,7 @@ def build_advanced_excel_report():
     ws_dash.title = "Summary Dashboard"
     
     dash_headers = [
-        "No", "타겟 도메인", "🌟 신규 서브", "📊 누적 / 🔥 신규 URL", 
+        "No", "타겟 도메인", "🌟 신규 서브 (개수)", "📊 누적 / 🔥 신규 URL", 
         "jsluice (누적 / 신규)", "TruffleHog 탐지",
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
@@ -367,7 +367,11 @@ def build_advanced_excel_report():
         if today_passive_count > 0 and bool(previous_subdomains):
             global_new_subdomains.update(new_subdomains)
 
-        sub_dash_mark = "🌟 신규" if (bool(new_subdomains) and bool(previous_subdomains) and today_passive_count > 0) else "-"
+        # ✨ 여기서 개수를 포함하여 문자열 생성
+        if bool(new_subdomains) and bool(previous_subdomains) and today_passive_count > 0:
+            sub_dash_mark = f"🌟 {len(new_subdomains)}개 신규"
+        else:
+            sub_dash_mark = "-"
         
         g_passive_tot += new_passive_tot; g_passive_new += domain_new_count
         g_jsluice_tot += new_jsluice_tot; g_jsluice_new += jsluice_new
@@ -392,7 +396,8 @@ def build_advanced_excel_report():
                     cell.hyperlink = f"#'{sheet_title}'!A1"
                     cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
                 else: cell.font = Font(name='Malgun Gothic', color='777777', italic=True)
-            elif c == 3 and sub_dash_mark == "🌟 신규": cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+            elif c == 3 and "신규" in sub_dash_mark: # 문자열 포함 여부로 변경
+                cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
             if today_passive_count > 0:
                 if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
@@ -529,8 +534,10 @@ def build_advanced_excel_report():
                 f.write(sub + '\n')
 
     if dash_idx > 2:
+        # ✨ 대시보드 하단 총합계에도 신규 서브도메인 전체 개수 표시
+        total_sub_mark = f"🌟 총 {len(global_new_subdomains)}개" if global_new_subdomains else "-"
         ws_dash.append([
-            "", "📊 총 합계 (Total)", "-", 
+            "", "📊 총 합계 (Total)", total_sub_mark, 
             f"{g_passive_tot} / {g_passive_new}", 
             f"{g_jsluice_tot} / {g_jsluice_new}", 
             g_truf, g_200, g_40x, g_50x
@@ -549,7 +556,7 @@ def build_advanced_excel_report():
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드"]: sheet.column_dimensions[col_letter].width = 55  
             elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)"]: sheet.column_dimensions[col_letter].width = 24
-            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률"]: sheet.column_dimensions[col_letter].width = 16
+            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🌟 신규 서브 (개수)", "🔮 잠재적 위험 확률"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
