@@ -126,6 +126,49 @@ async def process_all_gemini(gemini_key, candidate_urls, model_name):
             if i + 10 < len(candidate_urls): await asyncio.sleep(3)
     return ai_ranked_results
 
+# ✨ Wayback Machine CDX API 비동기 조회 함수 추가
+async def fetch_wayback_first_seen(session, subdomain):
+    url = f"https://web.archive.org/cdx/search/cdx?url={subdomain}/*&limit=1&fl=timestamp&output=json"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PassiveRecon/1.0"}
+    for attempt in range(3):
+        try:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # 첫 번째 배열은 헤더 ["timestamp"], 두 번째 배열이 실제 데이터
+                    if len(data) > 1 and len(data[1]) > 0:
+                        ts = data[1][0]
+                        return subdomain, f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
+                    else:
+                        return subdomain, "기록 없음"
+                elif response.status in [429, 503]:
+                    await asyncio.sleep(2)
+                    continue
+                else:
+                    break
+        except Exception:
+            await asyncio.sleep(1)
+    return subdomain, "기록 없음"
+
+async def get_all_subdomains_first_seen(subdomains):
+    results = {}
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for sub in subdomains:
+            tasks.append(fetch_wayback_first_seen(session, sub))
+            # Wayback Machine API Rate Limit 우회를 위해 20개씩 끊어서 요청
+            if len(tasks) >= 20:
+                batch_results = await asyncio.gather(*tasks)
+                for sub, date in batch_results:
+                    results[sub] = date
+                tasks = []
+                await asyncio.sleep(1) 
+        if tasks:
+            batch_results = await asyncio.gather(*tasks)
+            for sub, date in batch_results:
+                results[sub] = date
+    return results
+
 def build_advanced_excel_report():
     print("[+] 초고속 SQLite DB 기반 차분 분석(Differential Analysis) 엔진 가동 중...", flush=True)
     
@@ -320,8 +363,8 @@ def build_advanced_excel_report():
     cursor.execute("SELECT subdomain FROM historical_subdomains")
     previous_subdomains = {row[0] for row in cursor.fetchall()}
     
-    global_new_subdomains = set() # ✨ 신규 서브도메인 저장용 셋
-    global_current_subdomains = set() # ✨ 전체 누적 서브도메인 저장용 셋 (총계산용)
+    global_new_subdomains = set() 
+    global_current_subdomains = set() 
 
     for raw_target, url_map in matrix_data.items():
         cursor.execute("SELECT passive_tot FROM target_stats WHERE target = ?", (raw_target,))
@@ -361,18 +404,14 @@ def build_advanced_excel_report():
             elif status in ['401', '403']: count_40x += 1
             elif status.startswith('5'): count_50x += 1
 
-        # 도메인 파싱 시 None 또는 빈 문자열 방지
         current_subdomains = {urlparse(u).netloc for u in url_map.keys() if urlparse(u).netloc}
         new_subdomains = current_subdomains - previous_subdomains
         
-        # 전체 도메인 풀에 현재 찾은 서브도메인 병합
         global_current_subdomains.update(current_subdomains)
 
-        # 첫 실행이 아닐 때만 신규 서브도메인을 알림 리스트에 추가
         if today_passive_count > 0 and bool(previous_subdomains):
             global_new_subdomains.update(new_subdomains)
 
-        # ✨ 수정된 부분: 서브도메인 (기존+누적 / 신규) 카운트 생성 로직
         total_sub_count = len(current_subdomains)
         new_sub_count = len(new_subdomains) if bool(previous_subdomains) else 0
 
@@ -404,7 +443,7 @@ def build_advanced_excel_report():
                     cell.hyperlink = f"#'{sheet_title}'!A1"
                     cell.font = Font(name='Malgun Gothic', color='0056B3', underline='single')
                 else: cell.font = Font(name='Malgun Gothic', color='777777', italic=True)
-            elif c == 3 and new_sub_count > 0: # ✨ 신규 서브도메인이 1개라도 있으면 핑크색 하이라이트
+            elif c == 3 and new_sub_count > 0: 
                 cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
             if today_passive_count > 0:
@@ -485,6 +524,39 @@ def build_advanced_excel_report():
 
         if postman_folder["item"]: postman_collection["item"].append(postman_folder)
 
+    # ✨ Wayback Machine을 통해 수집된 모든 서브도메인의 최초 발견일 비동기 조회
+    subdomain_creation_dates = {}
+    if global_current_subdomains:
+        print(f"[*] Wayback Machine을 활용한 서브도메인 최초 발견일 추적 가동 (총 {len(global_current_subdomains)}개)...", flush=True)
+        subdomain_creation_dates = asyncio.run(get_all_subdomains_first_seen(list(global_current_subdomains)))
+    
+    # ✨ 서브도메인 전용 시트 생성 및 데이터 기록
+    if global_current_subdomains:
+        ws_subs = wb.create_sheet(title="🌐 서브도메인 연혁(Wayback)")
+        ws_subs.append(["No", "서브도메인 (Subdomain)", "🔥 신규 여부", "최초 발견일 (Wayback Machine)"])
+        for c in range(1, 5):
+            ws_subs.cell(1, c).font = font_header
+            ws_subs.cell(1, c).fill = fill_header
+            ws_subs.cell(1, c).alignment = align_center
+            ws_subs.cell(1, c).border = thin_border
+        
+        sub_idx = 2
+        # 신규 서브도메인이 상단에 오도록 정렬 후, 알파벳 순 정렬
+        sorted_subs = sorted(list(global_current_subdomains), key=lambda x: (x not in global_new_subdomains, x))
+        for sub in sorted_subs:
+            is_new_mark = "🌟 신규" if sub in global_new_subdomains else "-"
+            first_seen = subdomain_creation_dates.get(sub, "기록 없음")
+            ws_subs.append([sub_idx - 1, escape_formula(sub), is_new_mark, first_seen])
+            for c in range(1, 5):
+                cell = ws_subs.cell(sub_idx, c)
+                cell.font = font_data; cell.border = thin_border
+                if (sub_idx % 2) == 1: cell.fill = fill_zebra
+                if c == 3 and sub in global_new_subdomains: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                if c == 4 and first_seen != "기록 없음": cell.font = Font(name='Malgun Gothic', bold=True, color='28A745')
+                if c == 2: cell.alignment = align_left
+                else: cell.alignment = align_center
+            sub_idx += 1
+
     high_risk_records.sort(key=lambda x: (not x["is_new"], x["priority"], x["raw_target"], x["url"]))
     
     ws_high = wb.create_sheet(title="🚨 High Risk (고위험군)")
@@ -535,14 +607,12 @@ def build_advanced_excel_report():
         conn.commit()
     conn.close()
     
-    # 신규 서브도메인이 존재하면 디스코드 배송용으로 텍스트 파일로 저장
     if global_new_subdomains:
         with open('reports/new_subdomains.txt', 'w', encoding='utf-8') as f:
             for sub in sorted(list(global_new_subdomains)):
                 f.write(sub + '\n')
 
     if dash_idx > 2:
-        # ✨ 대시보드 하단 총합계에도 누적 / 신규 서브도메인 전체 개수 표시
         g_sub_tot = len(global_current_subdomains)
         g_sub_new = len(global_new_subdomains)
         total_sub_mark = f"{g_sub_tot} / {g_sub_new}"
@@ -559,14 +629,14 @@ def build_advanced_excel_report():
             cell.border = thin_border; cell.alignment = align_center if c != 2 else align_left
 
     for sheet in wb.worksheets:
-        header_row = 1 if sheet.title in ["Summary Dashboard", "🚨 High Risk (고위험군)", "🔮 Gemini AI Ranking"] else 2
+        header_row = 1 if sheet.title in ["Summary Dashboard", "🚨 High Risk (고위험군)", "🔮 Gemini AI Ranking", "🌐 서브도메인 연혁(Wayback)"] else 2
         for col_idx, col in enumerate(sheet.columns, 1):
             col_letter = get_column_letter(col_idx)
             header = str(sheet.cell(header_row, col_idx).value or "")
             if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)", "타겟 URL"]: sheet.column_dimensions[col_letter].width = 80  
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
-            elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드"]: sheet.column_dimensions[col_letter].width = 55  
-            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)"]: sheet.column_dimensions[col_letter].width = 24
+            elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드", "서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
+            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "최초 발견일 (Wayback Machine)"]: sheet.column_dimensions[col_letter].width = 28
             elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
