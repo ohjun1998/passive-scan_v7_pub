@@ -126,7 +126,7 @@ async def process_all_gemini(gemini_key, candidate_urls, model_name):
             if i + 10 < len(candidate_urls): await asyncio.sleep(3)
     return ai_ranked_results
 
-# ✨ Wayback Machine CDX API 비동기 조회 함수 추가
+# ✨ Wayback Machine 연혁 확인 함수
 async def fetch_wayback_first_seen(session, subdomain):
     url = f"https://web.archive.org/cdx/search/cdx?url={subdomain}/*&limit=1&fl=timestamp&output=json"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PassiveRecon/1.0"}
@@ -135,12 +135,11 @@ async def fetch_wayback_first_seen(session, subdomain):
             async with session.get(url, headers=headers, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # 첫 번째 배열은 헤더 ["timestamp"], 두 번째 배열이 실제 데이터
                     if len(data) > 1 and len(data[1]) > 0:
                         ts = data[1][0]
-                        return subdomain, f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
+                        return f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
                     else:
-                        return subdomain, "기록 없음"
+                        return "기록 없음"
                 elif response.status in [429, 503]:
                     await asyncio.sleep(2)
                     continue
@@ -148,25 +147,51 @@ async def fetch_wayback_first_seen(session, subdomain):
                     break
         except Exception:
             await asyncio.sleep(1)
-    return subdomain, "기록 없음"
+    return "기록 없음"
 
-async def get_all_subdomains_first_seen(subdomains):
+# ✨ 실시간 응답(httpx 유사 기능) 확인 함수
+async def fetch_subdomain_status(session, subdomain):
+    try:
+        # HTTPS 우선 시도 (SSL 인증서 오류 무시)
+        async with session.get(f"https://{subdomain}", timeout=5, allow_redirects=False) as resp:
+            return str(resp.status)
+    except Exception:
+        try:
+            # 실패 시 HTTP 재시도
+            async with session.get(f"http://{subdomain}", timeout=5, allow_redirects=False) as resp:
+                return str(resp.status)
+        except Exception:
+            return "Dead"
+
+# ✨ 단일 서브도메인 동시 분석 래퍼 함수
+async def analyze_subdomain(session, subdomain):
+    wb_task = asyncio.create_task(fetch_wayback_first_seen(session, subdomain))
+    status_task = asyncio.create_task(fetch_subdomain_status(session, subdomain))
+    
+    wb_date = await wb_task
+    status = await status_task
+    return subdomain, wb_date, status
+
+# ✨ 전체 서브도메인 분석 매니저
+async def analyze_all_subdomains(subdomains):
     results = {}
-    async with aiohttp.ClientSession() as session:
+    # SSL 검증을 비활성화하여 빠른 IP 연결 유무만 파악
+    connector = aiohttp.TCPConnector(ssl=False, limit=50)
+    async with aiohttp.ClientSession(connector=connector) as session:
         tasks = []
         for sub in subdomains:
-            tasks.append(fetch_wayback_first_seen(session, sub))
-            # Wayback Machine API Rate Limit 우회를 위해 20개씩 끊어서 요청
+            tasks.append(analyze_subdomain(session, sub))
+            # Rate Limit 및 과부하 방지를 위해 20개씩 끊어서 병렬 처리
             if len(tasks) >= 20:
                 batch_results = await asyncio.gather(*tasks)
-                for sub, date in batch_results:
-                    results[sub] = date
+                for sub, wb_date, status in batch_results:
+                    results[sub] = {"wayback": wb_date, "status": status}
                 tasks = []
                 await asyncio.sleep(1) 
         if tasks:
             batch_results = await asyncio.gather(*tasks)
-            for sub, date in batch_results:
-                results[sub] = date
+            for sub, wb_date, status in batch_results:
+                results[sub] = {"wayback": wb_date, "status": status}
     return results
 
 def build_advanced_excel_report():
@@ -524,17 +549,17 @@ def build_advanced_excel_report():
 
         if postman_folder["item"]: postman_collection["item"].append(postman_folder)
 
-    # ✨ Wayback Machine을 통해 수집된 모든 서브도메인의 최초 발견일 비동기 조회
-    subdomain_creation_dates = {}
+    # ✨ Wayback Machine 연혁 및 실시간 응답(httpx 유사) 비동기 동시 조회
+    subdomain_analysis_results = {}
     if global_current_subdomains:
-        print(f"[*] Wayback Machine을 활용한 서브도메인 최초 발견일 추적 가동 (총 {len(global_current_subdomains)}개)...", flush=True)
-        subdomain_creation_dates = asyncio.run(get_all_subdomains_first_seen(list(global_current_subdomains)))
+        print(f"[*] 서브도메인 실시간 응답 상태 및 Wayback 연혁 분석 가동 (총 {len(global_current_subdomains)}개)...", flush=True)
+        subdomain_analysis_results = asyncio.run(analyze_all_subdomains(list(global_current_subdomains)))
     
     # ✨ 서브도메인 전용 시트 생성 및 데이터 기록
     if global_current_subdomains:
         ws_subs = wb.create_sheet(title="🌐 서브도메인 연혁(Wayback)")
-        ws_subs.append(["No", "서브도메인 (Subdomain)", "🔥 신규 여부", "최초 발견일 (Wayback Machine)"])
-        for c in range(1, 5):
+        ws_subs.append(["No", "서브도메인 (Subdomain)", "🔥 신규 여부", "📡 응답 상태", "최초 발견일 (Wayback Machine)"])
+        for c in range(1, 6):
             ws_subs.cell(1, c).font = font_header
             ws_subs.cell(1, c).fill = fill_header
             ws_subs.cell(1, c).alignment = align_center
@@ -545,16 +570,28 @@ def build_advanced_excel_report():
         sorted_subs = sorted(list(global_current_subdomains), key=lambda x: (x not in global_new_subdomains, x))
         for sub in sorted_subs:
             is_new_mark = "🌟 신규" if sub in global_new_subdomains else "-"
-            first_seen = subdomain_creation_dates.get(sub, "기록 없음")
-            ws_subs.append([sub_idx - 1, escape_formula(sub), is_new_mark, first_seen])
-            for c in range(1, 5):
+            analysis = subdomain_analysis_results.get(sub, {"wayback": "기록 없음", "status": "Dead"})
+            first_seen = analysis["wayback"]
+            status = analysis["status"]
+            
+            ws_subs.append([sub_idx - 1, escape_formula(sub), is_new_mark, status, first_seen])
+            for c in range(1, 6):
                 cell = ws_subs.cell(sub_idx, c)
                 cell.font = font_data; cell.border = thin_border
                 if (sub_idx % 2) == 1: cell.fill = fill_zebra
-                if c == 3 and sub in global_new_subdomains: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                if c == 4 and first_seen != "기록 없음": cell.font = Font(name='Malgun Gothic', bold=True, color='28A745')
-                if c == 2: cell.alignment = align_left
-                else: cell.alignment = align_center
+                
+                if c == 2: 
+                    cell.alignment = align_left
+                else: 
+                    cell.alignment = align_center
+                    
+                if c == 3 and sub in global_new_subdomains: 
+                    cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 4: 
+                    cell.fill = PatternFill(start_color=get_status_color(status), end_color=get_status_color(status), fill_type='solid')
+                    cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF')
+                elif c == 5 and first_seen != "기록 없음": 
+                    cell.font = Font(name='Malgun Gothic', bold=True, color='28A745')
             sub_idx += 1
 
     high_risk_records.sort(key=lambda x: (not x["is_new"], x["priority"], x["raw_target"], x["url"]))
@@ -637,7 +674,7 @@ def build_advanced_excel_report():
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드", "서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
             elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "최초 발견일 (Wayback Machine)"]: sheet.column_dimensions[col_letter].width = 28
-            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률"]: sheet.column_dimensions[col_letter].width = 18
+            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
