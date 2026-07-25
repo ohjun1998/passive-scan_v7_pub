@@ -184,7 +184,6 @@ async def analyze_all_subdomains(subdomains):
             for sub, wb_date, status in batch_results: results[sub] = {"wayback": wb_date, "status": status}
     return results
 
-# === Google Dorking 자동화 함수 ===
 def run_google_dorking(targets):
     if not HAS_GOOGLE_SEARCH:
         print("[-] googlesearch-python 패키지가 없어 Dorking을 건너뜁니다.")
@@ -250,7 +249,7 @@ def build_advanced_excel_report():
     
     junk_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.css', '.woff', '.woff2', '.ico', '.eot', '.ttf', '.mp4')
     blacklist_words = ['logout', 'signout', 'delete', 'remove', 'revoke', 'destroy']
-    high_value_kw = ['jenkins', 'grafana', 'kibana', 'elastic', 'admin', 'dashboard'] # 🚩 고가치 타겟 키워드
+    high_value_kw = ['jenkins', 'grafana', 'kibana', 'elastic', 'admin', 'dashboard']
     
     js_url_converter = {}
     for mf in glob.glob('results/*_js_mapping.txt'):
@@ -398,10 +397,10 @@ def build_advanced_excel_report():
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     
-    # 🌟 [추가된 부분] 대시보드 헤더에 신규 열 추가
+    # 🌟 [요청 반영] 대시보드 헤더에 Katana 열 추가
     dash_headers = [
         "No", "타겟 도메인", "🌟 서브도메인 (누적/신규)", "📊 누적 / 🔥 신규 URL", 
-        "jsluice (누적 / 신규)", "TruffleHog 탐지",
+        "Katana 탐지", "jsluice (누적 / 신규)", "TruffleHog 탐지",
         "🔍 Google Dorks", "🚩 고가치 타겟",
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
@@ -416,6 +415,7 @@ def build_advanced_excel_report():
     
     # 글로벌 카운터
     g_passive_tot = g_passive_new = 0
+    g_katana_tot = 0
     g_jsluice_tot = g_jsluice_new = 0
     g_truf = g_dorks = g_high_value = g_200 = g_40x = g_50x = 0
 
@@ -431,7 +431,6 @@ def build_advanced_excel_report():
         cursor.execute("SELECT passive_tot FROM target_stats WHERE target = ?", (raw_target,))
         has_db = cursor.fetchone()
         
-        # URL도 없고 기존 DB 기록도 없고, 도킹 결과도 없으면 패스
         if not url_map and not has_db and domain_dork_count == 0: continue
 
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
@@ -439,6 +438,9 @@ def build_advanced_excel_report():
         
         today_passive_count = len(url_map)
         domain_new_count = sum(1 for data in url_map.values() if data.get("is_new", False))
+        
+        # 🌟 [요청 반영] Katana 탐지 개수 계산
+        domain_katana_count = sum(1 for data in url_map.values() if 'Katana' in data["tools"])
         
         today_jsluice_total = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
         jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
@@ -451,12 +453,14 @@ def build_advanced_excel_report():
             db_passive_tot, db_jsluice_tot, db_katana_tot = row
             new_passive_tot = db_passive_tot + domain_new_count
             new_jsluice_tot = db_jsluice_tot + jsluice_new
+            new_katana_tot = db_katana_tot + domain_katana_count
         else:
             new_passive_tot = today_passive_count
             new_jsluice_tot = today_jsluice_total
+            new_katana_tot = domain_katana_count
             
         cursor.execute("INSERT OR REPLACE INTO target_stats (target, passive_tot, jsluice_tot, katana_tot) VALUES (?, ?, ?, ?)", 
-                       (raw_target, new_passive_tot, new_jsluice_tot, db_katana_tot))
+                       (raw_target, new_passive_tot, new_jsluice_tot, new_katana_tot))
 
         count_200 = count_40x = count_50x = domain_high_value_count = 0
         for url in url_map.keys():
@@ -466,7 +470,6 @@ def build_advanced_excel_report():
             elif status in ['401', '403']: count_40x += 1
             elif status.startswith('5'): count_50x += 1
             
-            # 🌟 [추가된 부분] 고가치 타겟 카운팅 (블랙리스트 제외)
             c_server, c_tech = server_info.get(url, '-'), tech_info.get(url, '-')
             combined_context = f"{url} {c_server} {c_tech}".lower()
             detected_kw = [kw for kw in high_value_kw if kw in combined_context]
@@ -482,21 +485,22 @@ def build_advanced_excel_report():
 
         total_sub_count = len(current_subdomains)
         new_sub_count = len(new_subdomains) if bool(previous_subdomains) else 0
-
         sub_dash_mark = f"{total_sub_count} / {new_sub_count}" if today_passive_count > 0 else "0 / 0"
         
         g_passive_tot += new_passive_tot; g_passive_new += domain_new_count
+        g_katana_tot += new_katana_tot
         g_jsluice_tot += new_jsluice_tot; g_jsluice_new += jsluice_new
         g_truf += trufflehog_count
         g_dorks += domain_dork_count
         g_high_value += domain_high_value_count
         g_200 += count_200; g_40x += count_40x; g_50x += count_50x
         
-        # 🌟 [추가된 부분] 대시보드 열 매핑 추가
+        # 🌟 [요청 반영] 대시보드 행 데이터에 Katana 반영
         ws_dash.append([
             dash_idx - 1, escape_formula(raw_target), sub_dash_mark, 
-            f"{new_passive_tot} / {domain_new_count}", f"{new_jsluice_tot} / {jsluice_new}", 
-            trufflehog_count, domain_dork_count, domain_high_value_count, count_200, count_40x, count_50x
+            f"{new_passive_tot} / {domain_new_count}", domain_katana_count,
+            f"{new_jsluice_tot} / {jsluice_new}", trufflehog_count, 
+            domain_dork_count, domain_high_value_count, count_200, count_40x, count_50x
         ])
         
         for c in range(1, len(dash_headers) + 1):
@@ -511,10 +515,11 @@ def build_advanced_excel_report():
             
             if today_passive_count > 0 or domain_dork_count > 0:
                 if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                elif c == 6 and trufflehog_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                elif c == 7 and domain_dork_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                elif c == 8 and domain_high_value_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 5 and domain_katana_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 6 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 7 and trufflehog_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 8 and domain_dork_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 9 and domain_high_value_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             else:
                 if c != 2: cell.font = Font(name='Malgun Gothic', color='999999', italic=True)
         dash_idx += 1
@@ -563,7 +568,6 @@ def build_advanced_excel_report():
                 elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
-            # 🌟 [추가된 부분] 고가치 타겟 식별 및 High Risk 시트 기록 로직 연동
             is_high_risk, reason = False, ""
             combined_context = f"{url} {c_server} {c_tech}".lower()
             detected_kw = [kw for kw in high_value_kw if kw in combined_context]
@@ -660,20 +664,31 @@ def build_advanced_excel_report():
                 elif c in [4, 5]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
+    # === 🌟 [요청 반영] Gemini AI Ranking 시트에 응답 코드 추가 ===
     if ai_ranked_results:
         ws_ai = wb.create_sheet(title="🔮 Gemini AI Ranking")
-        ws_ai.append(["No", "타겟 URL", "🔮 잠재적 위험 확률", "위험 유형", "Gemini AI 지능형 정보 노출 분석 가이드"])
-        for c in range(1, 6):
-            ws_ai.cell(1, c).font = font_header; ws_ai.cell(1, c).fill = PatternFill(start_color='6F42C1', end_color='6F42C1', fill_type='solid')
-            ws_ai.cell(1, c).alignment = align_center; ws_ai.cell(1, c).border = thin_border
+        ws_ai.append(["No", "타겟 URL", "📡 응답 상태", "🔮 잠재적 위험 확률", "위험 유형", "Gemini AI 지능형 정보 노출 분석 가이드"])
+        for c in range(1, 7):
+            ws_ai.cell(1, c).font = font_header
+            ws_ai.cell(1, c).fill = PatternFill(start_color='6F42C1', end_color='6F42C1', fill_type='solid')
+            ws_ai.cell(1, c).alignment = align_center
+            ws_ai.cell(1, c).border = thin_border
         
         for idx, res in enumerate(ai_ranked_results, 1):
-            ws_ai.append([idx, escape_formula(res.get('url')), f"{res.get('probability')}%", escape_formula(res.get('vuln_type')), escape_formula(res.get('reason'))])
-            for c in range(1, 6):
+            ai_url = res.get('url')
+            ai_status = str(status_codes.get(ai_url, 'Dead'))
+            
+            ws_ai.append([idx, escape_formula(ai_url), ai_status, f"{res.get('probability')}%", escape_formula(res.get('vuln_type')), escape_formula(res.get('reason'))])
+            for c in range(1, 7):
                 cell = ws_ai.cell(idx + 1, c)
                 cell.font = font_data; cell.border = thin_border
                 if (idx % 2) == 1: cell.fill = fill_zebra
-                if c in [2, 4, 5]: cell.alignment = align_left
+                
+                if c == 3:
+                    cell.fill = PatternFill(start_color=get_status_color(ai_status), end_color=get_status_color(ai_status), fill_type='solid')
+                    cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF')
+                    cell.alignment = align_center
+                elif c in [2, 5, 6]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
     if all_today_discovered_urls:
@@ -689,8 +704,8 @@ def build_advanced_excel_report():
 
     if dash_idx > 2:
         g_sub_tot, g_sub_new = len(global_current_subdomains), len(global_new_subdomains)
-        # 🌟 [추가된 부분] 최종 합계 출력
-        ws_dash.append(["", "📊 총 합계 (Total)", f"{g_sub_tot} / {g_sub_new}", f"{g_passive_tot} / {g_passive_new}", f"{g_jsluice_tot} / {g_jsluice_new}", g_truf, g_dorks, g_high_value, g_200, g_40x, g_50x])
+        # 🌟 [요청 반영] 대시보드 최종 합계 행에 Katana 추가
+        ws_dash.append(["", "📊 총 합계 (Total)", f"{g_sub_tot} / {g_sub_new}", f"{g_passive_tot} / {g_passive_new}", g_katana_tot, f"{g_jsluice_tot} / {g_jsluice_new}", g_truf, g_dorks, g_high_value, g_200, g_40x, g_50x])
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF'); cell.fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
@@ -706,11 +721,11 @@ def build_advanced_excel_report():
             elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드", "서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
             elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "최초 발견일 (Wayback Machine)"]: sheet.column_dimensions[col_letter].width = 28
             elif header in ["기술 스택", "웹 서버"]: sheet.column_dimensions[col_letter].width = 25
-            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태", "🔍 Google Dorks", "🚩 고가치 타겟"]: sheet.column_dimensions[col_letter].width = 18
+            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태", "🔍 Google Dorks", "🚩 고가치 타겟", "Katana 탐지"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
-    if "🔮 Gemini AI Ranking" in wb.sheetnames: wb["🔮 Gemini AI Ranking"].column_dimensions['D'].width = 80
+    if "🔮 Gemini AI Ranking" in wb.sheetnames: wb["🔮 Gemini AI Ranking"].column_dimensions['E'].width = 80
     
     wb.save(f'reports/passive_recon_report_{now_str}.xlsx')
     with open(f'reports/postman_collection_{now_str}.json', 'w', encoding='utf-8') as f: json.dump(postman_collection, f, indent=4, ensure_ascii=False)
