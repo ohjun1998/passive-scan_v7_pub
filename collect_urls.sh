@@ -23,15 +23,15 @@ collect_master() {
         echo "$base_domain" >> "results/${safe_domain}_subs.txt"
         sort -u "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt"
         
-        # 💡 서브도메인 샘플링 한도 2배 상향 (1000 -> 2000)
+        # 서브도메인 샘플링 한도 2배 상향 (1000 -> 2000)
         shuf -n 2000 "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt" 2>/dev/null || true
         
-        # 💡 아카이브 수집 타임아웃 연장 (5m -> 10m)
+        # 아카이브 수집 타임아웃 연장 (5m -> 10m)
         cat "results/${safe_domain}_subs.txt" | timeout 10m gau > "results/${safe_domain}_gau.txt" 2>/dev/null
         cat "results/${safe_domain}_subs.txt" | timeout 10m waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
     else
         echo "[+] [${raw_domain}] 🔍 단일 도메인 정찰..."
-        # 💡 아카이브 수집 타임아웃 연장 (5m -> 10m)
+        # 아카이브 수집 타임아웃 연장 (5m -> 10m)
         echo "$base_domain" | timeout 10m gau > "results/${safe_domain}_gau.txt" 2>/dev/null
         echo "$base_domain" | timeout 10m waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
     fi
@@ -42,16 +42,17 @@ collect_master() {
     echo "[+] [${raw_domain}] 🕷️ Katana 지능형 크롤링 준비..."
     cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" 2>/dev/null | sort -u > "results/${safe_domain}_raw_seed.txt"
     
-    # 💡 OOM(메모리 초과) 방지 컷오프를 넉넉하게 상향 (50,000 -> 100,000)
+    # OOM(메모리 초과) 방지 컷오프를 넉넉하게 상향 (50,000 -> 100,000)
     shuf -n 100000 "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_raw_seed.txt" 2>/dev/null || true
     uro -i "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_clean_seed.txt"
 
-    # 💡 Katana 크롤링 시작점(Seed) 대폭 확대 (300 -> 1000)
+    # Katana 크롤링 시작점(Seed) 대폭 확대 (300 -> 1000)
     shuf -n 1000 "results/${safe_domain}_clean_seed.txt" > "results/${safe_domain}_katana_seed.txt" 2>/dev/null || cp "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
 
-    # 💡 Katana Depth 증가(-d 4) 및 타임아웃 대폭 연장(30분)
-    echo "  -> [Katana] Depth 4 딥 크롤링 시작 (최대 30분 타임아웃)..."
-    timeout 30m katana -list "results/${safe_domain}_katana_seed.txt" -d 4 -jc -kf all -c 3 -rl 75 -ct 15 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
+    # ✨ 수정됨: 옵션 C 적용 (스텔스 및 시스템 안전성 최우선)
+    # WAF 차단 및 서버 부하를 방지하기 위해 요청 속도(-rl 50)와 동시성(-c 5)을 대폭 하향, Depth는 2로 유지
+    echo "  -> [Katana] 스텔스(안전) 모드 크롤링 시작 (서버 부하 최소화)..."
+    timeout 30m katana -list "results/${safe_domain}_katana_seed.txt" -d 2 -jc -kf all -c 5 -rl 50 -ct 5 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
     grep -iE "$regex" "results/${safe_domain}_katana.txt" | sort -u -o "results/${safe_domain}_katana.txt"
     
     rm -f "results/${safe_domain}_raw_seed.txt" "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
@@ -93,7 +94,7 @@ collect_master() {
 
             shuf "results/${safe_domain}_js_new_list.txt" > "results/${safe_domain}_js_urls_target.txt"
             
-            # 💡 다운로드 한도를 1000개로 상향 조정
+            # 다운로드 한도를 1000개로 상향 조정
             local MAX_SUCCESS=1000
             local success_cnt=0
             local fail_cnt=0
@@ -102,7 +103,7 @@ collect_master() {
                 [[ -z "$url" ]] && continue
                 local safe_name=$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-150).js
                 
-                # 💡 JS 다운로드 타임아웃 5초로 수정 (connect 3초, max 5초)
+                # JS 다운로드 타임아웃 5초로 유지 (connect 3초, max 5초)
                 if curl -s -L --connect-timeout 3 --max-time 5 --fail \
                      -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36" \
                      "$url" -o "$download_dir/$safe_name"; then
