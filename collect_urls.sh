@@ -1,127 +1,122 @@
 #!/bin/bash
+
+# $1 인자가 없으면 기본값(00) 할당
+GROUP=${1:-"00"}
+TARGETS_FILE="targets.txt"
+
+if [ ! -f "$TARGETS_FILE" ]; then
+  echo "[-] $TARGETS_FILE 파일이 존재하지 않습니다."
+  exit 1
+fi
+
 mkdir -p results
-GROUP_SUFFIX=$1
+touch global_js_db.txt
 
-split -d -n l/20 targets.txt targets_group
-TARGET_FILE="targets_group${GROUP_SUFFIX}"
+echo "==================================================================="
+echo "🚀 [Node-$GROUP] 정찰 파이프라인 가동 (Waybackurls + GAU + Katana)"
+echo "==================================================================="
 
-collect_master() {
-    local raw_domain=$(echo "$1" | xargs)
-    [[ -z "$raw_domain" || "$raw_domain" =~ ^# ]] && return
+for DOMAIN in $(cat $TARGETS_FILE); do
+  # 와일드카드 필터링 (*.target.com -> target.com)
+  SAFE_DOMAIN=$(echo $DOMAIN | sed 's/\*\.//g')
+  
+  echo ""
+  echo "=================================================="
+  echo "🎯 [Target: $SAFE_DOMAIN] 데이터 수집 시작"
+  echo "=================================================="
 
-    local base_domain="$raw_domain"
-    local safe_domain="$raw_domain"
-    local regex="^https?://${raw_domain//./\.}(/|$)"
+  # ---------------------------------------------------------
+  # 1. Waybackurls (과거 아카이브 추출)
+  # ---------------------------------------------------------
+  echo "  [+] 🏛️ [Waybackurls] 과거 아카이브 URL 추출 중..."
+  echo $DOMAIN | waybackurls > results/${SAFE_DOMAIN}_waybackurls_raw.txt
+  
+  if [ -s "results/${SAFE_DOMAIN}_waybackurls_raw.txt" ]; then
+    cat results/${SAFE_DOMAIN}_waybackurls_raw.txt | uro > results/${SAFE_DOMAIN}_waybackurls.txt
+    WAYBACK_COUNT=$(wc -l < results/${SAFE_DOMAIN}_waybackurls.txt)
+    echo "  [+] 🔍 [Waybackurls] 중복 제거 완료: 총 ${WAYBACK_COUNT}개의 URL 확보"
+  else
+    echo "  [-] 🔍 [Waybackurls] 발견된 내역 없음"
+    touch results/${SAFE_DOMAIN}_waybackurls.txt
+  fi
+  rm -f results/${SAFE_DOMAIN}_waybackurls_raw.txt
 
-    if [[ "$raw_domain" == \** ]]; then
-        base_domain="${raw_domain#\*.}"
-        safe_domain="wild_${base_domain}"
-        regex="^https?://([a-zA-Z0-9.-]+\.)?${base_domain//./\.}(/|$)"
-        echo "[+] [${raw_domain}] 🔍 와일드카드 감지: Subfinder 전수조사..."
-        
-        subfinder -d "$base_domain" -all -silent > "results/${safe_domain}_subs.txt"
-        echo "$base_domain" >> "results/${safe_domain}_subs.txt"
-        sort -u "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt"
-        
-        # 서브도메인 샘플링 한도 2배 상향 (1000 -> 2000)
-        shuf -n 2000 "results/${safe_domain}_subs.txt" -o "results/${safe_domain}_subs.txt" 2>/dev/null || true
-        
-        # 아카이브 수집 타임아웃 연장 (5m -> 10m)
-        cat "results/${safe_domain}_subs.txt" | timeout 10m gau > "results/${safe_domain}_gau.txt" 2>/dev/null
-        cat "results/${safe_domain}_subs.txt" | timeout 10m waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
+  # ---------------------------------------------------------
+  # 2. GAU (GetAllUrls - 위협 인텔리전스 소스)
+  # ---------------------------------------------------------
+  echo "  [+] 🌐 [GAU] 외부 위협 인텔리전스(AlienVault 등) URL 수집 중..."
+  gau --threads 5 --retries 2 $DOMAIN > results/${SAFE_DOMAIN}_gau_raw.txt
+  
+  if [ -s "results/${SAFE_DOMAIN}_gau_raw.txt" ]; then
+    cat results/${SAFE_DOMAIN}_gau_raw.txt | uro > results/${SAFE_DOMAIN}_gau.txt
+    GAU_COUNT=$(wc -l < results/${SAFE_DOMAIN}_gau.txt)
+    echo "  [+] 🔍 [GAU] 중복 제거 완료: 총 ${GAU_COUNT}개의 URL 확보"
+  else
+    echo "  [-] 🔍 [GAU] 발견된 내역 없음"
+    touch results/${SAFE_DOMAIN}_gau.txt
+  fi
+  rm -f results/${SAFE_DOMAIN}_gau_raw.txt
+
+  # ---------------------------------------------------------
+  # 3. Katana (스텔스 크롤링 - 서버 부하 방지)
+  # ---------------------------------------------------------
+  echo "  [+] 🕷️ [Katana] 스텔스(안전) 모드 크롤링 가동 (-d 2 -c 5 -rl 50)..."
+  katana -u https://$SAFE_DOMAIN -d 2 -c 5 -rl 50 -jc -silent > results/${SAFE_DOMAIN}_katana_raw.txt
+  
+  if [ -s "results/${SAFE_DOMAIN}_katana_raw.txt" ]; then
+    cat results/${SAFE_DOMAIN}_katana_raw.txt | uro > results/${SAFE_DOMAIN}_katana.txt
+    KATANA_COUNT=$(wc -l < results/${SAFE_DOMAIN}_katana.txt)
+    echo "  [+] 🔍 [Katana] 스텔스 크롤링 완료: 총 ${KATANA_COUNT}개의 고가치 경로 식별"
+  else
+    echo "  [-] 🔍 [Katana] 스텔스 크롤링 결과 없음"
+    touch results/${SAFE_DOMAIN}_katana.txt
+  fi
+  rm -f results/${SAFE_DOMAIN}_katana_raw.txt
+
+  # ---------------------------------------------------------
+  # 4. JS 파일 추출 및 스마트 다운로드 (방어 로직)
+  # ---------------------------------------------------------
+  echo "  [+] ⚙️ 수집된 전체 데이터에서 JavaScript(JS) 타겟 추출 중..."
+  cat results/${SAFE_DOMAIN}_*.txt | grep -iE '\.js($|\?)' | awk -F '?' '{print $1}' | sort -u > results/${SAFE_DOMAIN}_js_targets.txt
+  JS_TOTAL=$(wc -l < results/${SAFE_DOMAIN}_js_targets.txt)
+  
+  if [ "$JS_TOTAL" -gt 0 ]; then
+    echo "  [+] 💡 총 ${JS_TOTAL}개의 자바스크립트(JS) 소스 경로를 식별했습니다."
+    
+    # 이전에 분석한 JS 파일 제외 (스마트 필터링)
+    grep -v -F -f global_js_db.txt results/${SAFE_DOMAIN}_js_targets.txt > results/${SAFE_DOMAIN}_js_new.txt 2>/dev/null || cat results/${SAFE_DOMAIN}_js_targets.txt > results/${SAFE_DOMAIN}_js_new.txt
+    JS_NEW=$(wc -l < results/${SAFE_DOMAIN}_js_new.txt)
+    
+    echo "  [!] 🛡️ [중복 방지] 과거에 분석 완료된 파일 제외: ${JS_NEW}개의 신규 JS만 남았습니다."
+    
+    if [ "$JS_NEW" -gt 0 ]; then
+      # 서버 부하 방지 및 액션스 런타임 보호를 위한 1000개 컷팅
+      head -n 1000 results/${SAFE_DOMAIN}_js_new.txt > results/${SAFE_DOMAIN}_js_final.txt
+      JS_FINAL=$(wc -l < results/${SAFE_DOMAIN}_js_final.txt)
+      
+      echo "  [!] 🛡️ [용량 보호] 디스크 과부하 및 타임아웃 방지를 위해 최대 ${JS_FINAL}개까지만 다운로드를 진행합니다."
+      echo "  [+] 📥 JS 다운로드 병렬(10 Thread) 가동 중..."
+      
+      mkdir -p results/${SAFE_DOMAIN}_js_files
+      # xargs 경고 수정: -n 1 제거 및 curl 옵션 안정화
+      cat results/${SAFE_DOMAIN}_js_final.txt | xargs -I {} -P 10 sh -c '
+        url="{}"
+        filename=$(basename "$url")
+        # 404/403 무시, 3초 타임아웃
+        curl -s -f -m 3 --create-dirs -o "results/'${SAFE_DOMAIN}'_js_files/$filename" "$url" && echo "$url" >> global_js_db.txt
+      '
+      
+      DOWNLOADED=$(ls -1q results/${SAFE_DOMAIN}_js_files 2>/dev/null | wc -l)
+      echo "  [+] ✅ 다운로드 성공: 총 ${DOWNLOADED} 개 확보 (404/403 에러 제외됨)"
     else
-        echo "[+] [${raw_domain}] 🔍 단일 도메인 정찰..."
-        # 아카이브 수집 타임아웃 연장 (5m -> 10m)
-        echo "$base_domain" | timeout 10m gau > "results/${safe_domain}_gau.txt" 2>/dev/null
-        echo "$base_domain" | timeout 10m waybackurls > "results/${safe_domain}_waybackurls.txt" 2>/dev/null
+      echo "  [+] ✅ 다운로드할 신규 JS 파일이 없습니다. (모두 이미 분석됨)"
     fi
+  else
+    echo "  [-] 💡 식별된 JS 소스 경로가 없습니다."
+  fi
+  
+done
 
-    grep -iE "$regex" "results/${safe_domain}_gau.txt" | sort -u -o "results/${safe_domain}_gau.txt"
-    grep -iE "$regex" "results/${safe_domain}_waybackurls.txt" | sort -u -o "results/${safe_domain}_waybackurls.txt"
-
-    echo "[+] [${raw_domain}] 🕷️ Katana 지능형 크롤링 준비..."
-    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" 2>/dev/null | sort -u > "results/${safe_domain}_raw_seed.txt"
-    
-    # OOM(메모리 초과) 방지 컷오프를 넉넉하게 상향 (50,000 -> 100,000)
-    shuf -n 100000 "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_raw_seed.txt" 2>/dev/null || true
-    uro -i "results/${safe_domain}_raw_seed.txt" -o "results/${safe_domain}_clean_seed.txt"
-
-    # Katana 크롤링 시작점(Seed) 대폭 확대 (300 -> 1000)
-    shuf -n 1000 "results/${safe_domain}_clean_seed.txt" > "results/${safe_domain}_katana_seed.txt" 2>/dev/null || cp "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
-
-    # ✨ 수정됨: 옵션 C 적용 (스텔스 및 시스템 안전성 최우선)
-    # WAF 차단 및 서버 부하를 방지하기 위해 요청 속도(-rl 50)와 동시성(-c 5)을 대폭 하향, Depth는 2로 유지
-    echo "  -> [Katana] 스텔스(안전) 모드 크롤링 시작 (서버 부하 최소화)..."
-    timeout 30m katana -list "results/${safe_domain}_katana_seed.txt" -d 2 -jc -kf all -c 5 -rl 50 -ct 5 -silent > "results/${safe_domain}_katana.txt" 2>/dev/null
-    grep -iE "$regex" "results/${safe_domain}_katana.txt" | sort -u -o "results/${safe_domain}_katana.txt"
-    
-    rm -f "results/${safe_domain}_raw_seed.txt" "results/${safe_domain}_clean_seed.txt" "results/${safe_domain}_katana_seed.txt"
-
-    # 무의미한 오픈소스 JS 라이브러리를 강력한 정규식으로 차단하여 고가치 JS 파일만 추출
-    cat "results/${safe_domain}_gau.txt" "results/${safe_domain}_waybackurls.txt" "results/${safe_domain}_katana.txt" 2>/dev/null \
-        | grep -E '\.js($|\?)' 2>/dev/null \
-        | grep -vE -i '(jquery|bootstrap|vue|react|angular|moment|lodash|underscore|vendor|node_modules|polyfill|webpack)' \
-        | sort -u > "results/${safe_domain}_js_raw_list.txt"
-    
-    > "results/${safe_domain}_js_master_list.txt"
-    while read -r url; do
-        [[ -z "$url" ]] && continue
-        if [[ "$url" =~ ^https?:// ]]; then echo "$url"
-        elif [[ "$url" =~ ^// ]]; then echo "https:$url"
-        elif [[ "$url" =~ ^/ ]]; then echo "https://$base_domain$url"
-        else echo "https://$base_domain/$url"
-        fi
-    done < "results/${safe_domain}_js_raw_list.txt" | sort -u > "results/${safe_domain}_js_master_list.txt"
-
-    local total_js=$(wc -l < "results/${safe_domain}_js_master_list.txt")
-    echo "  -> [성공] 필터링 된 ${total_js}개의 고가치 자바스크립트(JS) 소스 경로 식별"
-
-    if [ "$total_js" -gt 0 ]; then
-        if [ -f "global_js_db.txt" ]; then
-            sort -u global_js_db.txt -o global_js_db_sorted.txt
-            comm -23 "results/${safe_domain}_js_master_list.txt" global_js_db_sorted.txt > "results/${safe_domain}_js_new_list.txt"
-        else
-            cp "results/${safe_domain}_js_master_list.txt" "results/${safe_domain}_js_new_list.txt"
-        fi
-
-        local total_new_js=$(wc -l < "results/${safe_domain}_js_new_list.txt")
-        echo "  -> [신규 JS 필터링] ${total_new_js}개의 새로운 JS 파일을 발견했습니다."
-
-        if [ "$total_new_js" -gt 0 ]; then
-            local download_dir="results/${safe_domain}_js_files"
-            mkdir -p "$download_dir"
-            rm -f "results/${safe_domain}_js_mapping.txt"
-
-            shuf "results/${safe_domain}_js_new_list.txt" > "results/${safe_domain}_js_urls_target.txt"
-            
-            # 다운로드 한도를 1000개로 상향 조정
-            local MAX_SUCCESS=1000
-            local success_cnt=0
-            local fail_cnt=0
-
-            while read -r url; do
-                [[ -z "$url" ]] && continue
-                local safe_name=$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-150).js
-                
-                # JS 다운로드 타임아웃 5초로 유지 (connect 3초, max 5초)
-                if curl -s -L --connect-timeout 3 --max-time 5 --fail \
-                     -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36" \
-                     "$url" -o "$download_dir/$safe_name"; then
-                    
-                    ((success_cnt++))
-                    echo -e "${safe_name}\t${url}" >> "results/${safe_domain}_js_mapping.txt"
-                    if [ "$success_cnt" -ge "$MAX_SUCCESS" ]; then break; fi
-                else
-                    ((fail_cnt++))
-                fi
-            done < "results/${safe_domain}_js_urls_target.txt"
-            echo "  -> 다운로드 완료: ${success_cnt}개 확보"
-        fi
-    fi
-}
-
-export -f collect_master
-# 가상머신 터짐(OOM) 방지를 위해 동시 실행 프로세스를 2개로 고정
-xargs -P 2 -n 1 -a "$TARGET_FILE" -I {} bash -c 'collect_master "{}"'
-
-rm -f targets_group*
+echo "==================================================================="
+echo "🏁 [Node-$GROUP] 도메인 수집 프로세스 종료"
+echo "==================================================================="
