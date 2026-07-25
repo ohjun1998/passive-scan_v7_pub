@@ -126,7 +126,7 @@ async def process_all_gemini(gemini_key, candidate_urls, model_name):
             if i + 10 < len(candidate_urls): await asyncio.sleep(3)
     return ai_ranked_results
 
-# ✨ Wayback Machine 연혁 확인 함수
+# Wayback Machine 연혁 확인 함수
 async def fetch_wayback_first_seen(session, subdomain):
     url = f"https://web.archive.org/cdx/search/cdx?url={subdomain}/*&limit=1&fl=timestamp&output=json"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PassiveRecon/1.0"}
@@ -149,21 +149,18 @@ async def fetch_wayback_first_seen(session, subdomain):
             await asyncio.sleep(1)
     return "기록 없음"
 
-# ✨ 실시간 응답(httpx 유사 기능) 확인 함수
+# 실시간 응답(httpx 유사 기능) 확인 함수
 async def fetch_subdomain_status(session, subdomain):
     try:
-        # HTTPS 우선 시도 (SSL 인증서 오류 무시)
         async with session.get(f"https://{subdomain}", timeout=5, allow_redirects=False) as resp:
             return str(resp.status)
     except Exception:
         try:
-            # 실패 시 HTTP 재시도
             async with session.get(f"http://{subdomain}", timeout=5, allow_redirects=False) as resp:
                 return str(resp.status)
         except Exception:
             return "Dead"
 
-# ✨ 단일 서브도메인 동시 분석 래퍼 함수
 async def analyze_subdomain(session, subdomain):
     wb_task = asyncio.create_task(fetch_wayback_first_seen(session, subdomain))
     status_task = asyncio.create_task(fetch_subdomain_status(session, subdomain))
@@ -172,16 +169,13 @@ async def analyze_subdomain(session, subdomain):
     status = await status_task
     return subdomain, wb_date, status
 
-# ✨ 전체 서브도메인 분석 매니저
 async def analyze_all_subdomains(subdomains):
     results = {}
-    # SSL 검증을 비활성화하여 빠른 IP 연결 유무만 파악
     connector = aiohttp.TCPConnector(ssl=False, limit=50)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = []
         for sub in subdomains:
             tasks.append(analyze_subdomain(session, sub))
-            # Rate Limit 및 과부하 방지를 위해 20개씩 끊어서 병렬 처리
             if len(tasks) >= 20:
                 batch_results = await asyncio.gather(*tasks)
                 for sub, wb_date, status in batch_results:
@@ -248,6 +242,7 @@ def build_advanced_excel_report():
 
     for file_path in glob.glob('results/*.*'):
         filename = os.path.basename(file_path).lower()
+        # ✨ Katana 결과 파일 매칭 패턴 추가
         match = re.match(r'^(.*)_(linkfinder|trufflehog|gau|waybackurls|katana)\.txt$', filename)
         if not match: continue
         
@@ -262,6 +257,7 @@ def build_advanced_excel_report():
         elif 'trufflehog' in filename: source_tool = 'TruffleHog'
         elif 'waybackurls' in filename: source_tool = 'Waybackurls'
         elif 'gau' in filename: source_tool = 'GAU'
+        elif 'katana' in filename: source_tool = 'Katana'  # ✨ Katana 소스 출처 라벨링 추가
         else: continue
 
         try:
@@ -549,13 +545,11 @@ def build_advanced_excel_report():
 
         if postman_folder["item"]: postman_collection["item"].append(postman_folder)
 
-    # ✨ Wayback Machine 연혁 및 실시간 응답(httpx 유사) 비동기 동시 조회
     subdomain_analysis_results = {}
     if global_current_subdomains:
         print(f"[*] 서브도메인 실시간 응답 상태 및 Wayback 연혁 분석 가동 (총 {len(global_current_subdomains)}개)...", flush=True)
         subdomain_analysis_results = asyncio.run(analyze_all_subdomains(list(global_current_subdomains)))
     
-    # ✨ 서브도메인 전용 시트 생성 및 데이터 기록
     if global_current_subdomains:
         ws_subs = wb.create_sheet(title="🌐 서브도메인 연혁(Wayback)")
         ws_subs.append(["No", "서브도메인 (Subdomain)", "🔥 신규 여부", "📡 응답 상태", "최초 발견일 (Wayback Machine)"])
@@ -566,7 +560,6 @@ def build_advanced_excel_report():
             ws_subs.cell(1, c).border = thin_border
         
         sub_idx = 2
-        # 신규 서브도메인이 상단에 오도록 정렬 후, 알파벳 순 정렬
         sorted_subs = sorted(list(global_current_subdomains), key=lambda x: (x not in global_new_subdomains, x))
         for sub in sorted_subs:
             is_new_mark = "🌟 신규" if sub in global_new_subdomains else "-"
