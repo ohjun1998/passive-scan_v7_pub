@@ -16,7 +16,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# === [추가된 부분] Google Dorking 모듈 라이브러리 ===
+# === Google Dorking 모듈 라이브러리 ===
 try:
     from googlesearch import search
     HAS_GOOGLE_SEARCH = True
@@ -184,59 +184,39 @@ async def analyze_all_subdomains(subdomains):
             for sub, wb_date, status in batch_results: results[sub] = {"wayback": wb_date, "status": status}
     return results
 
-# === [추가된 부분] Google Dorking 자동화 함수 ===
+# === Google Dorking 자동화 함수 ===
 def run_google_dorking(targets):
-    """타겟 도메인을 대상으로 Google Dorking을 수행합니다."""
     if not HAS_GOOGLE_SEARCH:
         print("[-] googlesearch-python 패키지가 없어 Dorking을 건너뜁니다.")
         return []
 
     print(f"\n[*] 🔎 Google Dorking OSINT 엔진 가동 (대상: {len(targets)}개)")
-    print("[!] 주의: GitHub Actions 환경에서는 구글의 IP 차단(429)이 발생할 수 있습니다. 딜레이를 적용하여 조심스럽게 탐색합니다.")
-    
     results = []
     for raw_target in targets:
-        # 와일드카드 처리 (*.target.com -> target.com)
         base_domain = raw_target[2:] if raw_target.startswith('*.') else raw_target
-        
-        # 💡 Pro Tip 반영: 쿼리 수를 줄이기 위해 OR 연산자로 묶어서 효율적으로 검색
         dorks = [
             f'site:{base_domain} (ext:log OR ext:env OR ext:bak OR ext:sql OR ext:db)',
             f'site:{base_domain} (inurl:admin OR inurl:swagger OR inurl:api_key OR inurl:graphql)',
             f'site:{base_domain} intitle:"index of"'
         ]
-        
         for dork in dorks:
             print(f"  [+] 검색 중: {dork}")
             try:
-                # num_results=10 으로 설정하여 상위 10개만 핵심적으로 추출. sleep_interval 부여.
-                # 참고: 라이브러리 버전에 따라 인자가 다를 수 있어 유연하게 처리
                 for url in search(dork, num_results=10, sleep_interval=5):
-                    # 위험도 판별 간단 로직
                     risk = "Low"
                     if any(x in url.lower() for x in ['.log', '.env', '.sql', '.bak', '.db']): risk = "🚨 High (민감 파일)"
                     elif "admin" in url.lower() or "swagger" in url.lower(): risk = "⚠️ Medium (관리자/API)"
                     elif "index of" in dork: risk = "⚠️ Medium (디렉토리 리스팅)"
                     
-                    results.append({
-                        "target": base_domain,
-                        "dork": dork,
-                        "url": url,
-                        "risk": risk
-                    })
+                    results.append({"target": base_domain, "dork": dork, "url": url, "risk": risk})
             except Exception as e:
-                # 429 Too Many Requests 등의 에러 발생 시 부드럽게 넘김
-                print(f"  [-] 구글 검색 에러 (IP 차단/캡차 발생 가능성): {e}")
-                print("  [*] 다음 타겟으로 조용히 넘어갑니다...")
-                break # 해당 타겟의 남은 Dork 중단
-            
-            # 구글 눈치보기 딜레이
+                print(f"  [-] 구글 검색 에러: {e}")
+                break 
             time.sleep(5)
-            
     return results
 
 def build_advanced_excel_report():
-    print("[+] 초고속 SQLite DB 기반 차분 분석(Differential Analysis) 엔진 가동 중...", flush=True)
+    print("[+] 초고속 SQLite DB 기반 차분 분석 엔진 가동 중...", flush=True)
     
     targets = []
     if os.path.exists('targets.txt'):
@@ -256,10 +236,7 @@ def build_advanced_excel_report():
     cursor.execute("CREATE TABLE IF NOT EXISTS downloaded_js (url TEXT PRIMARY KEY)")
     cursor.execute("CREATE TABLE IF NOT EXISTS historical_subdomains (subdomain TEXT PRIMARY KEY)")
     cursor.execute('''CREATE TABLE IF NOT EXISTS target_stats (
-        target TEXT PRIMARY KEY,
-        passive_tot INTEGER DEFAULT 0,
-        jsluice_tot INTEGER DEFAULT 0,
-        katana_tot INTEGER DEFAULT 0 
+        target TEXT PRIMARY KEY, passive_tot INTEGER DEFAULT 0, jsluice_tot INTEGER DEFAULT 0, katana_tot INTEGER DEFAULT 0 
     )''')
     conn.commit()
 
@@ -273,6 +250,7 @@ def build_advanced_excel_report():
     
     junk_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.css', '.woff', '.woff2', '.ico', '.eot', '.ttf', '.mp4')
     blacklist_words = ['logout', 'signout', 'delete', 'remove', 'revoke', 'destroy']
+    high_value_kw = ['jenkins', 'grafana', 'kibana', 'elastic', 'admin', 'dashboard'] # 🚩 고가치 타겟 키워드
     
     js_url_converter = {}
     for mf in glob.glob('results/*_js_mapping.txt'):
@@ -377,8 +355,7 @@ def build_advanced_excel_report():
                     else: tech_info[url] = str(techs) if techs else '-'
         except: pass
 
-    # === [추가된 부분] Google Dorking 실행 ===
-    # Excel 렌더링 직전에 도킹을 수행하여 결과를 가져옵니다.
+    # Google Dorking 실행
     dork_results = run_google_dorking(targets)
 
     gemini_key = os.environ.get('GEMINI_API_KEY')
@@ -421,9 +398,11 @@ def build_advanced_excel_report():
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     
+    # 🌟 [추가된 부분] 대시보드 헤더에 신규 열 추가
     dash_headers = [
         "No", "타겟 도메인", "🌟 서브도메인 (누적/신규)", "📊 누적 / 🔥 신규 URL", 
         "jsluice (누적 / 신규)", "TruffleHog 탐지",
+        "🔍 Google Dorks", "🚩 고가치 타겟",
         "🟢 200 (OK)", "🟠 403/401 (권한)", "🔴 500대 (에러)"
     ]
     ws_dash.append(dash_headers)
@@ -435,20 +414,25 @@ def build_advanced_excel_report():
     all_today_discovered_urls = []
     high_risk_records = []
     
+    # 글로벌 카운터
     g_passive_tot = g_passive_new = 0
     g_jsluice_tot = g_jsluice_new = 0
-    g_truf = g_200 = g_40x = g_50x = 0
+    g_truf = g_dorks = g_high_value = g_200 = g_40x = g_50x = 0
 
     cursor.execute("SELECT subdomain FROM historical_subdomains")
     previous_subdomains = {row[0] for row in cursor.fetchall()}
-    
     global_new_subdomains = set() 
     global_current_subdomains = set() 
 
     for raw_target, url_map in matrix_data.items():
+        base_domain_for_dork = raw_target[2:] if raw_target.startswith('*.') else raw_target
+        domain_dork_count = sum(1 for d in dork_results if d['target'] == base_domain_for_dork)
+        
         cursor.execute("SELECT passive_tot FROM target_stats WHERE target = ?", (raw_target,))
         has_db = cursor.fetchone()
-        if not url_map and not has_db: continue
+        
+        # URL도 없고 기존 DB 기록도 없고, 도킹 결과도 없으면 패스
+        if not url_map and not has_db and domain_dork_count == 0: continue
 
         sheet_title = re.sub(r'[\\/\?\*\:\[\]]', '_', raw_target)[:30]
         postman_folder = {"name": raw_target, "item": []}
@@ -458,7 +442,6 @@ def build_advanced_excel_report():
         
         today_jsluice_total = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"])
         jsluice_new = sum(1 for data in url_map.values() if 'LinkFinder' in data["tools"] and data.get("is_new", False))
-        
         trufflehog_count = sum(1 for data in url_map.values() if 'TruffleHog' in data["tools"])
 
         cursor.execute("SELECT passive_tot, jsluice_tot, katana_tot FROM target_stats WHERE target = ?", (raw_target,))
@@ -475,17 +458,23 @@ def build_advanced_excel_report():
         cursor.execute("INSERT OR REPLACE INTO target_stats (target, passive_tot, jsluice_tot, katana_tot) VALUES (?, ?, ?, ?)", 
                        (raw_target, new_passive_tot, new_jsluice_tot, db_katana_tot))
 
-        count_200 = count_40x = count_50x = 0
+        count_200 = count_40x = count_50x = domain_high_value_count = 0
         for url in url_map.keys():
             all_today_discovered_urls.append(url)
             status = str(status_codes.get(url, 'Dead'))
             if status.startswith('2'): count_200 += 1
             elif status in ['401', '403']: count_40x += 1
             elif status.startswith('5'): count_50x += 1
+            
+            # 🌟 [추가된 부분] 고가치 타겟 카운팅 (블랙리스트 제외)
+            c_server, c_tech = server_info.get(url, '-'), tech_info.get(url, '-')
+            combined_context = f"{url} {c_server} {c_tech}".lower()
+            detected_kw = [kw for kw in high_value_kw if kw in combined_context]
+            if detected_kw and not any(b in url.lower() for b in blacklist_words):
+                domain_high_value_count += 1
 
         current_subdomains = {urlparse(u).netloc for u in url_map.keys() if urlparse(u).netloc}
         new_subdomains = current_subdomains - previous_subdomains
-        
         global_current_subdomains.update(current_subdomains)
 
         if today_passive_count > 0 and bool(previous_subdomains):
@@ -494,18 +483,20 @@ def build_advanced_excel_report():
         total_sub_count = len(current_subdomains)
         new_sub_count = len(new_subdomains) if bool(previous_subdomains) else 0
 
-        if today_passive_count > 0: sub_dash_mark = f"{total_sub_count} / {new_sub_count}"
-        else: sub_dash_mark = "0 / 0"
+        sub_dash_mark = f"{total_sub_count} / {new_sub_count}" if today_passive_count > 0 else "0 / 0"
         
         g_passive_tot += new_passive_tot; g_passive_new += domain_new_count
         g_jsluice_tot += new_jsluice_tot; g_jsluice_new += jsluice_new
         g_truf += trufflehog_count
+        g_dorks += domain_dork_count
+        g_high_value += domain_high_value_count
         g_200 += count_200; g_40x += count_40x; g_50x += count_50x
         
+        # 🌟 [추가된 부분] 대시보드 열 매핑 추가
         ws_dash.append([
             dash_idx - 1, escape_formula(raw_target), sub_dash_mark, 
             f"{new_passive_tot} / {domain_new_count}", f"{new_jsluice_tot} / {jsluice_new}", 
-            trufflehog_count, count_200, count_40x, count_50x
+            trufflehog_count, domain_dork_count, domain_high_value_count, count_200, count_40x, count_50x
         ])
         
         for c in range(1, len(dash_headers) + 1):
@@ -518,10 +509,12 @@ def build_advanced_excel_report():
                 else: cell.font = Font(name='Malgun Gothic', color='777777', italic=True)
             elif c == 3 and new_sub_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             
-            if today_passive_count > 0:
+            if today_passive_count > 0 or domain_dork_count > 0:
                 if c == 4 and domain_new_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 elif c == 5 and jsluice_new > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 elif c == 6 and trufflehog_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 7 and domain_dork_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
+                elif c == 8 and domain_high_value_count > 0: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             else:
                 if c != 2: cell.font = Font(name='Malgun Gothic', color='999999', italic=True)
         dash_idx += 1
@@ -557,7 +550,6 @@ def build_advanced_excel_report():
             current_status = "Skipped(위험)" if is_blacklist else ( "Static(생략)" if urlparse(url).path.lower().endswith(junk_extensions) else status_codes.get(url, 'Dead') )
             is_new_subdomain = (urlparse(url).netloc in new_subdomains) and bool(previous_subdomains)
             sub_mark = "🌟 신규" if is_new_subdomain else "-"
-
             c_server, c_tech = server_info.get(url, '-'), tech_info.get(url, '-')
 
             ws.append([sub_idx, is_new_mark, sub_mark, escape_formula(tools_str), escape_formula(files_str), current_status, escape_formula(c_server), escape_formula(c_tech), escape_formula(url)])
@@ -571,9 +563,17 @@ def build_advanced_excel_report():
                 elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
+            # 🌟 [추가된 부분] 고가치 타겟 식별 및 High Risk 시트 기록 로직 연동
             is_high_risk, reason = False, ""
-            if 'TruffleHog' in data["tools"]: is_high_risk, reason = True, "🔥 [Critical] TruffleHog: 기밀 키(Secret) 유출 의심"
-            elif is_blacklist: is_high_risk, reason = True, "⚠️ [Warning] 파괴적 엔드포인트 수동 검점 요망"
+            combined_context = f"{url} {c_server} {c_tech}".lower()
+            detected_kw = [kw for kw in high_value_kw if kw in combined_context]
+
+            if 'TruffleHog' in data["tools"]: 
+                is_high_risk, reason = True, "🔥 [Critical] TruffleHog: 기밀 키(Secret) 유출 의심"
+            elif is_blacklist: 
+                is_high_risk, reason = True, "⚠️ [Warning] 파괴적 엔드포인트 수동 검점 요망"
+            elif detected_kw: 
+                is_high_risk, reason = True, f"🚩 [High-Value] 주요 관리자/인프라 패널 식별 ({', '.join(detected_kw).title()})"
             else:
                 path_lower = urlparse(url).path.lower()
                 if regex_infra_paths.search(path_lower): is_high_risk, reason = True, "🚨 [Infra] 인프라/버전관리 폴더 노출 의심"
@@ -639,12 +639,9 @@ def build_advanced_excel_report():
             else: cell.alignment = align_center
         high_risk_idx += 1
 
-    # === [추가된 부분] Google Dorking 시트 생성 ===
     if dork_results:
         ws_dork = wb.create_sheet(title="🔍 Google Dorking")
         ws_dork.append(["No", "타겟 도메인", "위험도", "사용된 Dork 쿼리", "발견된 인덱싱 URL"])
-        
-        # 헤더 스타일 적용 (구글 느낌의 블루 색상)
         dork_fill = PatternFill(start_color='4285F4', end_color='4285F4', fill_type='solid')
         for c in range(1, 6):
             ws_dork.cell(1, c).font = font_header; ws_dork.cell(1, c).fill = dork_fill
@@ -692,7 +689,8 @@ def build_advanced_excel_report():
 
     if dash_idx > 2:
         g_sub_tot, g_sub_new = len(global_current_subdomains), len(global_new_subdomains)
-        ws_dash.append(["", "📊 총 합계 (Total)", f"{g_sub_tot} / {g_sub_new}", f"{g_passive_tot} / {g_passive_new}", f"{g_jsluice_tot} / {g_jsluice_new}", g_truf, g_200, g_40x, g_50x])
+        # 🌟 [추가된 부분] 최종 합계 출력
+        ws_dash.append(["", "📊 총 합계 (Total)", f"{g_sub_tot} / {g_sub_new}", f"{g_passive_tot} / {g_passive_new}", f"{g_jsluice_tot} / {g_jsluice_new}", g_truf, g_dorks, g_high_value, g_200, g_40x, g_50x])
         for c in range(1, len(dash_headers) + 1):
             cell = ws_dash.cell(dash_idx, c)
             cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF'); cell.fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
@@ -708,7 +706,7 @@ def build_advanced_excel_report():
             elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드", "서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
             elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "최초 발견일 (Wayback Machine)"]: sheet.column_dimensions[col_letter].width = 28
             elif header in ["기술 스택", "웹 서버"]: sheet.column_dimensions[col_letter].width = 25
-            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태"]: sheet.column_dimensions[col_letter].width = 18
+            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태", "🔍 Google Dorks", "🚩 고가치 타겟"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
