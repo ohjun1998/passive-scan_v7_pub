@@ -354,7 +354,6 @@ def build_advanced_excel_report():
                     else: tech_info[url] = str(techs) if techs else '-'
         except: pass
 
-    # Google Dorking 실행
     dork_results = run_google_dorking(targets)
 
     gemini_key = os.environ.get('GEMINI_API_KEY')
@@ -397,7 +396,6 @@ def build_advanced_excel_report():
     ws_dash = wb.active
     ws_dash.title = "Summary Dashboard"
     
-    # 🌟 [요청 반영] 대시보드 헤더에 '웹 서버 탐지', '기술 스택 탐지' 추가
     dash_headers = [
         "No", "타겟 도메인", "🌟 서브도메인 (누적/신규)", "📊 누적 / 🔥 신규 URL", 
         "Katana 탐지", "jsluice (누적 / 신규)", "TruffleHog 탐지",
@@ -414,7 +412,6 @@ def build_advanced_excel_report():
     all_today_discovered_urls = []
     high_risk_records = []
     
-    # 글로벌 카운터
     g_passive_tot = g_passive_new = 0
     g_katana_tot = 0
     g_jsluice_tot = g_jsluice_new = 0
@@ -425,7 +422,6 @@ def build_advanced_excel_report():
     global_new_subdomains = set() 
     global_current_subdomains = set() 
 
-    # 도메인별 상세 시트 데이터를 임시로 담을 구조
     domain_sheets_data = []
 
     for raw_target, url_map in matrix_data.items():
@@ -502,7 +498,6 @@ def build_advanced_excel_report():
         g_high_value += domain_high_value_count
         g_200 += count_200; g_40x += count_40x; g_50x += count_50x
         
-        # 🌟 [요청 반영] 대시보드 행 데이터에 웹 서버, 기술 스택 카운트 반영
         ws_dash.append([
             dash_idx - 1, escape_formula(raw_target), sub_dash_mark, 
             f"{new_passive_tot} / {domain_new_count}", domain_katana_count,
@@ -537,7 +532,6 @@ def build_advanced_excel_report():
         if today_passive_count > 0:
             domain_sheets_data.append((sheet_title, url_map, new_subdomains, postman_folder))
 
-    # 하이리스크 데이터 수집 및 정렬
     for raw_target, url_map in matrix_data.items():
         for url, data in url_map.items():
             is_blacklist = any(b in url.lower() for b in blacklist_words)
@@ -577,19 +571,12 @@ def build_advanced_excel_report():
         subdomain_analysis_results = asyncio.run(analyze_all_subdomains(list(global_current_subdomains)))
 
     # =========================================================================
-    # 🌟 [요청 반영] 시트 순서 명확한 재배치 (앞쪽에 핵심 시트 배치)
-    # 1. Summary Dashboard
-    # 2. 🔮 Gemini AI Ranking
-    # 3. 🚨 High Risk (고위험군)
-    # 4. 🌐 서브도메인 연혁(Wayback)
-    # 5. 🔍 Google Dorking
-    # 6. 나머지 도메인별 상세 시트들
+    # 2. 🔮 Gemini AI Ranking 시트 생성 (가독성 순서 개선)
     # =========================================================================
-
-    # 2. 🔮 Gemini AI Ranking 시트 생성
     if ai_ranked_results:
         ws_ai = wb.create_sheet(title="🔮 Gemini AI Ranking")
-        ws_ai.append(["No", "타겟 URL", "📡 응답 상태", "🔮 잠재적 위험 확률", "위험 유형", "Gemini AI 지능형 정보 노출 분석 가이드"])
+        ai_headers = ["No", "🔮 잠재적 위험 확률 (%)", "📡 응답 상태", "🎯 타겟 URL", "⚠️ 위험 유형", "💡 Gemini AI 분석 가이드"]
+        ws_ai.append(ai_headers)
         for c in range(1, 7):
             ws_ai.cell(1, c).font = font_header
             ws_ai.cell(1, c).fill = PatternFill(start_color='6F42C1', end_color='6F42C1', fill_type='solid')
@@ -598,42 +585,56 @@ def build_advanced_excel_report():
         for idx, res in enumerate(ai_ranked_results, 1):
             ai_url = res.get('url')
             ai_status = str(status_codes.get(ai_url, 'Dead'))
-            ws_ai.append([idx, escape_formula(ai_url), ai_status, f"{res.get('probability')}%", escape_formula(res.get('vuln_type')), escape_formula(res.get('reason'))])
+            ws_ai.append([idx, f"{res.get('probability')}%", ai_status, escape_formula(ai_url), escape_formula(res.get('vuln_type')), escape_formula(res.get('reason'))])
             for c in range(1, 7):
                 cell = ws_ai.cell(idx + 1, c)
                 cell.font = font_data; cell.border = thin_border
                 if (idx % 2) == 1: cell.fill = fill_zebra
+                
                 if c == 3:
                     cell.fill = PatternFill(start_color=get_status_color(ai_status), end_color=get_status_color(ai_status), fill_type='solid')
                     cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
-                elif c in [2, 5, 6]: cell.alignment = align_left
+                elif c in [4, 5, 6]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
-    # 3. 🚨 High Risk (고위험군) 시트 생성
+    # =========================================================================
+    # 3. 🚨 High Risk (고위험군) 시트 생성 (가독성 순서 개선)
+    # =========================================================================
     high_risk_records.sort(key=lambda x: (not x["is_new"], x["priority"], x["raw_target"], x["url"]))
     ws_high = wb.create_sheet(title="🚨 High Risk (고위험군)")
-    ws_high.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "웹 서버", "기술 스택", "타겟 도메인", "고위험 경로 (Endpoint)", "탐지 사유"])
-    for c in range(1, 12): ws_high.cell(1, c).font = font_header; ws_high.cell(1, c).fill = fill_header; ws_high.cell(1, c).alignment = align_center; ws_high.cell(1, c).border = thin_border
+    high_headers = ["No", "🚨 탐지 사유 / 위험도", "📡 응답 상태", "🎯 고위험 경로 (Endpoint)", "🏢 타겟 도메인", "🔥 신규여부", "🌟 신규 서브", "🌐 웹 서버", "🛠️ 기술 스택", "📂 소스 출처", "📜 발견된 JS 파일명"]
+    ws_high.append(high_headers)
+    for c in range(1, 12): 
+        ws_high.cell(1, c).font = font_header; ws_high.cell(1, c).fill = fill_header
+        ws_high.cell(1, c).alignment = align_center; ws_high.cell(1, c).border = thin_border
 
     high_risk_idx = 2
     for hr in high_risk_records:
-        ws_high.append([high_risk_idx - 1, hr["is_new_mark"], hr["sub_mark"], escape_formula(hr["tools_str"]), escape_formula(hr["files_str"]), hr["current_status"], escape_formula(hr["server"]), escape_formula(hr["tech"]), escape_formula(hr["raw_target"]), escape_formula(hr["url"]), escape_formula(hr["reason"])])
+        ws_high.append([high_risk_idx - 1, escape_formula(hr["reason"]), hr["current_status"], escape_formula(hr["url"]), escape_formula(hr["raw_target"]), hr["is_new_mark"], hr["sub_mark"], escape_formula(hr["server"]), escape_formula(hr["tech"]), escape_formula(hr["tools_str"]), escape_formula(hr["files_str"])])
         for c in range(1, 12):
             cell = ws_high.cell(high_risk_idx, c)
             cell.font = font_data; cell.border = thin_border
             if (high_risk_idx % 2) == 0: cell.fill = fill_zebra
-            if c == 2 and hr["is_new"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-            if c == 3 and hr["is_new_sub"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-            if c == 6: cell.fill = PatternFill(start_color=get_status_color(hr["current_status"]), end_color=get_status_color(hr["current_status"]), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
-            elif c in [4, 5, 7, 8, 9, 10, 11]: cell.alignment = align_left
+            
+            if c == 3:
+                cell.fill = PatternFill(start_color=get_status_color(hr["current_status"]), end_color=get_status_color(hr["current_status"]), fill_type='solid')
+                cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
+            elif c == 6 and hr["is_new"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C'); cell.alignment = align_center
+            elif c == 7 and hr["is_new_sub"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C'); cell.alignment = align_center
+            elif c in [2, 4, 5, 8, 9, 10, 11]: cell.alignment = align_left
             else: cell.alignment = align_center
         high_risk_idx += 1
 
-    # 4. 🌐 서브도메인 연혁(Wayback) 시트 생성
+    # =========================================================================
+    # 4. 🌐 서브도메인 연혁(Wayback) 시트 생성 (가독성 순서 개선)
+    # =========================================================================
     if global_current_subdomains:
         ws_subs = wb.create_sheet(title="🌐 서브도메인 연혁(Wayback)")
-        ws_subs.append(["No", "서브도메인 (Subdomain)", "🔥 신규 여부", "📡 응답 상태", "최초 발견일 (Wayback Machine)"])
-        for c in range(1, 6): ws_subs.cell(1, c).font = font_header; ws_subs.cell(1, c).fill = fill_header; ws_subs.cell(1, c).alignment = align_center; ws_subs.cell(1, c).border = thin_border
+        subs_headers = ["No", "📡 응답 상태", "🌐 서브도메인 (Subdomain)", "📅 최초 발견일 (Wayback)", "🔥 신규 여부"]
+        ws_subs.append(subs_headers)
+        for c in range(1, 6): 
+            ws_subs.cell(1, c).font = font_header; ws_subs.cell(1, c).fill = fill_header
+            ws_subs.cell(1, c).alignment = align_center; ws_subs.cell(1, c).border = thin_border
         
         sub_idx = 2
         sorted_subs = sorted(list(global_current_subdomains), key=lambda x: (x not in global_new_subdomains, x))
@@ -641,40 +642,50 @@ def build_advanced_excel_report():
             is_new_mark = "🌟 신규" if sub in global_new_subdomains else "-"
             analysis = subdomain_analysis_results.get(sub, {"wayback": "기록 없음", "status": "Dead"})
             first_seen, status = analysis["wayback"], analysis["status"]
-            ws_subs.append([sub_idx - 1, escape_formula(sub), is_new_mark, status, first_seen])
+            ws_subs.append([sub_idx - 1, status, escape_formula(sub), first_seen, is_new_mark])
             for c in range(1, 6):
                 cell = ws_subs.cell(sub_idx, c)
                 cell.font = font_data; cell.border = thin_border
                 if (sub_idx % 2) == 1: cell.fill = fill_zebra
-                cell.alignment = align_left if c == 2 else align_center
-                if c == 3 and sub in global_new_subdomains: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                elif c == 4: cell.fill = PatternFill(start_color=get_status_color(status), end_color=get_status_color(status), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF')
-                elif c == 5 and first_seen != "기록 없음": cell.font = Font(name='Malgun Gothic', bold=True, color='28A745')
+                
+                if c == 2:
+                    cell.fill = PatternFill(start_color=get_status_color(status), end_color=get_status_color(status), fill_type='solid')
+                    cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
+                elif c == 3: cell.alignment = align_left
+                elif c == 4 and first_seen != "기록 없음": cell.font = Font(name='Malgun Gothic', bold=True, color='28A745'); cell.alignment = align_center
+                elif c == 5 and sub in global_new_subdomains: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C'); cell.alignment = align_center
+                else: cell.alignment = align_center
             sub_idx += 1
 
-    # 5. 🔍 Google Dorking 시트 생성
+    # =========================================================================
+    # 5. 🔍 Google Dorking 시트 생성 (가독성 순서 개선)
+    # =========================================================================
     if dork_results:
         ws_dork = wb.create_sheet(title="🔍 Google Dorking")
-        ws_dork.append(["No", "타겟 도메인", "위험도", "사용된 Dork 쿼리", "발견된 인덱싱 URL"])
+        dork_headers = ["No", "🚨 위험도", "🎯 발견된 인덱싱 URL", "🏢 타겟 도메인", "⌨️ 사용된 Dork 쿼리"]
+        ws_dork.append(dork_headers)
         dork_fill = PatternFill(start_color='4285F4', end_color='4285F4', fill_type='solid')
         for c in range(1, 6):
             ws_dork.cell(1, c).font = font_header; ws_dork.cell(1, c).fill = dork_fill
             ws_dork.cell(1, c).alignment = align_center; ws_dork.cell(1, c).border = thin_border
             
         for idx, res in enumerate(dork_results, 1):
-            ws_dork.append([idx, escape_formula(res['target']), escape_formula(res['risk']), escape_formula(res['dork']), escape_formula(res['url'])])
+            ws_dork.append([idx, escape_formula(res['risk']), escape_formula(res['url']), escape_formula(res['target']), escape_formula(res['dork'])])
             for c in range(1, 6):
                 cell = ws_dork.cell(idx + 1, c)
                 cell.font = font_data; cell.border = thin_border
                 if (idx % 2) == 1: cell.fill = fill_zebra
-                if c == 3:
+                
+                if c == 2:
                     cell.alignment = align_center
                     if "High" in res['risk']: cell.font = Font(name='Malgun Gothic', bold=True, color='DC3545')
                     elif "Medium" in res['risk']: cell.font = Font(name='Malgun Gothic', bold=True, color='FD7E14')
-                elif c in [4, 5]: cell.alignment = align_left
+                elif c in [3, 4, 5]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
-    # 6. 나머지 도메인별 상세 시트들 생성
+    # =========================================================================
+    # 6. 나머지 도메인별 상세 시트들 생성 (가독성 순서 개선)
+    # =========================================================================
     for sheet_title, url_map, new_subdomains, postman_folder in domain_sheets_data:
         ws = wb.create_sheet(title=sheet_title)
         ws.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
@@ -683,8 +694,11 @@ def build_advanced_excel_report():
         back_cell.hyperlink = "#'Summary Dashboard'!A1"; back_cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='0056B3', underline='single')
         back_cell.fill = PatternFill(start_color='E9ECEF', end_color='E9ECEF', fill_type='solid'); back_cell.alignment = align_left
 
-        ws.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "웹 서버", "기술 스택", "타겟 절대 경로 (URL)"])
-        for c in range(1, 10): ws.cell(2, c).font = font_header; ws.cell(2, c).fill = fill_header; ws.cell(2, c).alignment = align_center; ws.cell(2, c).border = thin_border
+        domain_headers = ["No", "📡 응답 상태", "🎯 타겟 절대 경로 (URL)", "🔥 신규여부", "🌟 신규 서브", "🌐 웹 서버", "🛠️ 기술 스택", "📂 소스 출처", "📜 발견된 JS 파일명"]
+        ws.append(domain_headers)
+        for c in range(1, 10): 
+            ws.cell(2, c).font = font_header; ws.cell(2, c).fill = fill_header
+            ws.cell(2, c).alignment = align_center; ws.cell(2, c).border = thin_border
 
         sorted_urls = sorted(url_map.items(), key=lambda x: (
             not x[1].get("is_new", False), 
@@ -707,20 +721,22 @@ def build_advanced_excel_report():
             sub_mark = "🌟 신규" if is_new_subdomain else "-"
             c_server, c_tech = server_info.get(url, '-'), tech_info.get(url, '-')
 
-            ws.append([sub_idx, is_new_mark, sub_mark, escape_formula(tools_str), escape_formula(files_str), current_status, escape_formula(c_server), escape_formula(c_tech), escape_formula(url)])
+            ws.append([sub_idx, current_status, escape_formula(url), is_new_mark, sub_mark, escape_formula(c_server), escape_formula(c_tech), escape_formula(tools_str), escape_formula(files_str)])
             for c in range(1, 10):
                 cell = ws.cell(sub_idx + 2, c)
                 cell.font = font_data; cell.border = thin_border
                 if ((sub_idx+2) % 2) == 1: cell.fill = fill_zebra
-                if c == 2 and data.get("is_new", False): cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                if c == 3 and is_new_subdomain: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
-                if c == 6: cell.fill = PatternFill(start_color=get_status_color(current_status), end_color=get_status_color(current_status), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
-                elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
+                
+                if c == 2: 
+                    cell.fill = PatternFill(start_color=get_status_color(current_status), end_color=get_status_color(current_status), fill_type='solid')
+                    cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
+                elif c == 4 and data.get("is_new", False): cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C'); cell.alignment = align_center
+                elif c == 5 and is_new_subdomain: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C'); cell.alignment = align_center
+                elif c in [3, 6, 7, 8, 9]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
         if postman_folder["item"]: postman_collection["item"].append(postman_folder)
 
-    # 대시보드 최종 합계 행 추가
     if dash_idx > 2:
         g_sub_tot, g_sub_new = len(global_current_subdomains), len(global_new_subdomains)
         ws_dash.append(["", "📊 총 합계 (Total)", f"{g_sub_tot} / {g_sub_new}", f"{g_passive_tot} / {g_passive_new}", g_katana_tot, f"{g_jsluice_tot} / {g_jsluice_new}", g_truf, g_server_tot, g_tech_tot, g_dorks, g_high_value, g_200, g_40x, g_50x])
@@ -729,21 +745,18 @@ def build_advanced_excel_report():
             cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='FFFFFF'); cell.fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
             cell.border = thin_border; cell.alignment = align_center if c != 2 else align_left
 
-    # 시트 순서 명시적 재정렬 (Summary Dashboard를 맨 앞으로 강제 이동)
     sheet_order = ["Summary Dashboard", "🔮 Gemini AI Ranking", "🚨 High Risk (고위험군)", "🌐 서브도메인 연혁(Wayback)", "🔍 Google Dorking"]
     ordered_sheets = []
     for title in sheet_order:
         if title in wb.sheetnames:
             ordered_sheets.append(wb[title])
     
-    # 나머지 도메인별 시트들 추가
     for sheet in wb.worksheets:
         if sheet not in ordered_sheets:
             ordered_sheets.append(sheet)
             
     wb._sheets = ordered_sheets
 
-    # DB 저장 및 마무리
     if all_today_discovered_urls:
         cursor.executemany("INSERT OR IGNORE INTO master_urls (url) VALUES (?)", [(u,) for u in list(set(all_today_discovered_urls))])
         today_subs = {urlparse(u).netloc.split(':')[0] for u in all_today_discovered_urls if urlparse(u).netloc}
@@ -755,21 +768,26 @@ def build_advanced_excel_report():
         with open('reports/new_subdomains.txt', 'w', encoding='utf-8') as f:
             for sub in sorted(list(global_new_subdomains)): f.write(sub + '\n')
 
+    # =========================================================================
+    # 열 너비(Width) 자동 맞춤 조정 (변경된 헤더명 기준 매핑)
+    # =========================================================================
     for sheet in wb.worksheets:
         header_row = 1 if sheet.title in ["Summary Dashboard", "🚨 High Risk (고위험군)", "🔮 Gemini AI Ranking", "🌐 서브도메인 연혁(Wayback)", "🔍 Google Dorking"] else 2
         for col_idx, col in enumerate(sheet.columns, 1):
             col_letter = get_column_letter(col_idx)
             header = str(sheet.cell(header_row, col_idx).value or "")
-            if header in ["타겟 절대 경로 (URL)", "고위험 경로 (Endpoint)", "타겟 URL", "발견된 인덱싱 URL", "사용된 Dork 쿼리"]: sheet.column_dimensions[col_letter].width = 80  
-            elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
-            elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드", "서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
-            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "최초 발견일 (Wayback Machine)"]: sheet.column_dimensions[col_letter].width = 28
-            elif header in ["기술 스택", "웹 서버", "기술 스택 탐지", "웹 서버 탐지"]: sheet.column_dimensions[col_letter].width = 25
-            elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태", "🔍 Google Dorks", "🚩 고가치 타겟", "Katana 탐지"]: sheet.column_dimensions[col_letter].width = 18
+            
+            if header in ["🎯 타겟 절대 경로 (URL)", "🎯 고위험 경로 (Endpoint)", "🎯 타겟 URL", "🎯 발견된 인덱싱 URL", "⌨️ 사용된 Dork 쿼리"]: sheet.column_dimensions[col_letter].width = 80  
+            elif header == "📜 발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
+            elif header in ["🚨 탐지 사유 / 위험도", "💡 Gemini AI 분석 가이드", "🌐 서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
+            elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "📅 최초 발견일 (Wayback)", "🏢 타겟 도메인"]: sheet.column_dimensions[col_letter].width = 28
+            elif header in ["🛠️ 기술 스택", "🌐 웹 서버", "기술 스택 탐지", "웹 서버 탐지", "📂 소스 출처"]: sheet.column_dimensions[col_letter].width = 25
+            elif header in ["📡 응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률 (%)", "🔍 Google Dorks", "🚩 고가치 타겟", "Katana 탐지", "🚨 위험도"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
     ws_dash.column_dimensions['B'].width = 35
-    if "🔮 Gemini AI Ranking" in wb.sheetnames: wb["🔮 Gemini AI Ranking"].column_dimensions['E'].width = 80
+    if "🔮 Gemini AI Ranking" in wb.sheetnames: 
+        wb["🔮 Gemini AI Ranking"].column_dimensions['F'].width = 80 # 분석 가이드 열(F) 넓게 확보
     
     wb.save(f'reports/passive_recon_report_{now_str}.xlsx')
     with open(f'reports/postman_collection_{now_str}.json', 'w', encoding='utf-8') as f: json.dump(postman_collection, f, indent=4, ensure_ascii=False)
