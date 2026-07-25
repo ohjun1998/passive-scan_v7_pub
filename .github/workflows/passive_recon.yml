@@ -198,7 +198,15 @@ jobs:
           echo "⚖️ 밸런스 모드: 노드당 초당 10회 제한 (글로벌 200 RPS) / 5 쓰레드"
           echo "========================================================="
           
+          # Httpx 스캔 실행 및 JSON 저장
           httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -td -server -random-agent -rl 10 -t 5 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
+          
+          # 🚩 고가치 타겟(Admin/Infra) 즉시 필터링 및 터미널 출력
+          echo "========================================================="
+          echo "🚨 고가치 타겟(High-Value Targets) 즉시 점검 목록 🚨"
+          grep -i "jenkins\|grafana\|kibana\|elastic\|admin\|dashboard" strike_out/httpx_results_${{ matrix.group }}.json | jq -r '"   🚩 [\(.status_code // "N/A")] \(.url) (Tech: \(.tech // [] | join(", ")), Server: \(.webserver // "-"))"' || echo "   - 현재 청크에서는 발견되지 않음"
+          echo "========================================================="
+          
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
         fi
