@@ -54,7 +54,6 @@ def normalize_dynamic_path(path):
     p = re.sub(r'\b[a-zA-Z0-9]{10,}\b', '{HASH}', p)
     return p
 
-# 패시브 정찰 단계용 주요 보안 필터
 regex_sensitive_exts = re.compile(r'\.(env|bak|swp|old|sql|sqlite|db|dump|log|config|properties|yml|yaml|ini)$', re.IGNORECASE)
 regex_sensitive_paths = re.compile(r'/(admin|administrator|wp-admin|manage|phpmyadmin|server-status|server-info|actuator|swagger-ui|graphql)($|/)', re.IGNORECASE)
 regex_credential_params = re.compile(r'(?:\?|&)(api_?key|token|jwt|auth|secret|password|pwd|access_?token)=([a-zA-Z0-9\-_\.]{8,})', re.IGNORECASE)
@@ -126,7 +125,6 @@ async def process_all_gemini(gemini_key, candidate_urls, model_name):
             if i + 10 < len(candidate_urls): await asyncio.sleep(3)
     return ai_ranked_results
 
-# Wayback Machine 연혁 확인 함수
 async def fetch_wayback_first_seen(session, subdomain):
     url = f"https://web.archive.org/cdx/search/cdx?url={subdomain}/*&limit=1&fl=timestamp&output=json"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PassiveRecon/1.0"}
@@ -149,7 +147,6 @@ async def fetch_wayback_first_seen(session, subdomain):
             await asyncio.sleep(1)
     return "기록 없음"
 
-# 실시간 응답(httpx 유사 기능) 확인 함수
 async def fetch_subdomain_status(session, subdomain):
     try:
         async with session.get(f"https://{subdomain}", timeout=5, allow_redirects=False) as resp:
@@ -164,7 +161,6 @@ async def fetch_subdomain_status(session, subdomain):
 async def analyze_subdomain(session, subdomain):
     wb_task = asyncio.create_task(fetch_wayback_first_seen(session, subdomain))
     status_task = asyncio.create_task(fetch_subdomain_status(session, subdomain))
-    
     wb_date = await wb_task
     status = await status_task
     return subdomain, wb_date, status
@@ -242,7 +238,6 @@ def build_advanced_excel_report():
 
     for file_path in glob.glob('results/*.*'):
         filename = os.path.basename(file_path).lower()
-        # ✨ Katana 결과 파일 매칭 패턴 추가
         match = re.match(r'^(.*)_(linkfinder|trufflehog|gau|waybackurls|katana)\.txt$', filename)
         if not match: continue
         
@@ -257,7 +252,7 @@ def build_advanced_excel_report():
         elif 'trufflehog' in filename: source_tool = 'TruffleHog'
         elif 'waybackurls' in filename: source_tool = 'Waybackurls'
         elif 'gau' in filename: source_tool = 'GAU'
-        elif 'katana' in filename: source_tool = 'Katana'  # ✨ Katana 소스 출처 라벨링 추가
+        elif 'katana' in filename: source_tool = 'Katana'
         else: continue
 
         try:
@@ -314,13 +309,24 @@ def build_advanced_excel_report():
             matrix_data[raw_target][abs_url]["files"].add(js_file)
 
     status_codes = {}
+    server_info = {}
+    tech_info = {}
     for res_file in glob.glob('results/httpx_results_*.json') + glob.glob('strike_out/httpx_results_*.json'):
         try:
             with open(res_file, 'r', errors='ignore') as f:
                 for line in f:
                     if not line.strip(): continue
                     data = json.loads(line.strip())
-                    status_codes[data.get('url')] = data.get('status_code', 'Dead')
+                    url = data.get('url')
+                    status_codes[url] = data.get('status_code', 'Dead')
+                    
+                    # ✨ -server 및 -td 옵션 결과 파싱 추가
+                    server_info[url] = data.get('webserver', '-')
+                    techs = data.get('tech')
+                    if isinstance(techs, list):
+                        tech_info[url] = ", ".join(techs)
+                    else:
+                        tech_info[url] = str(techs) if techs else '-'
         except: pass
 
     gemini_key = os.environ.get('GEMINI_API_KEY')
@@ -479,13 +485,14 @@ def build_advanced_excel_report():
 
         ws = wb.create_sheet(title=sheet_title)
         ws.append(["🔙 대시보드로 돌아가기 (Return to Dashboard)"])
-        ws.merge_cells('A1:G1')
+        ws.merge_cells('A1:I1')
         back_cell = ws.cell(row=1, column=1)
         back_cell.hyperlink = "#'Summary Dashboard'!A1"; back_cell.font = Font(name='Malgun Gothic', size=11, bold=True, color='0056B3', underline='single')
         back_cell.fill = PatternFill(start_color='E9ECEF', end_color='E9ECEF', fill_type='solid'); back_cell.alignment = align_left
 
-        ws.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "타겟 절대 경로 (URL)"])
-        for c in range(1, 8): ws.cell(2, c).font = font_header; ws.cell(2, c).fill = fill_header; ws.cell(2, c).alignment = align_center; ws.cell(2, c).border = thin_border
+        # ✨ 헤더에 '웹 서버' 및 '기술 스택' 추가
+        ws.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "웹 서버", "기술 스택", "타겟 절대 경로 (URL)"])
+        for c in range(1, 10): ws.cell(2, c).font = font_header; ws.cell(2, c).fill = fill_header; ws.cell(2, c).alignment = align_center; ws.cell(2, c).border = thin_border
 
         sorted_urls = sorted(url_map.items(), key=lambda x: (
             not x[1].get("is_new", False), 
@@ -507,15 +514,19 @@ def build_advanced_excel_report():
             is_new_subdomain = (urlparse(url).netloc in new_subdomains) and bool(previous_subdomains)
             sub_mark = "🌟 신규" if is_new_subdomain else "-"
 
-            ws.append([sub_idx, is_new_mark, sub_mark, escape_formula(tools_str), escape_formula(files_str), current_status, escape_formula(url)])
-            for c in range(1, 8):
+            # ✨ 서버 및 기술 스택 정보 가져오기
+            c_server = server_info.get(url, '-')
+            c_tech = tech_info.get(url, '-')
+
+            ws.append([sub_idx, is_new_mark, sub_mark, escape_formula(tools_str), escape_formula(files_str), current_status, escape_formula(c_server), escape_formula(c_tech), escape_formula(url)])
+            for c in range(1, 10):
                 cell = ws.cell(sub_idx + 2, c)
                 cell.font = font_data; cell.border = thin_border
                 if ((sub_idx+2) % 2) == 1: cell.fill = fill_zebra
                 if c == 2 and data.get("is_new", False): cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 if c == 3 and is_new_subdomain: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
                 if c == 6: cell.fill = PatternFill(start_color=get_status_color(current_status), end_color=get_status_color(current_status), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
-                elif c in [4, 5, 7]: cell.alignment = align_left
+                elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
                 else: cell.alignment = align_center
 
             is_high_risk, reason = False, ""
@@ -535,6 +546,8 @@ def build_advanced_excel_report():
                     "tools_str": tools_str,
                     "files_str": files_str,
                     "current_status": current_status,
+                    "server": c_server,
+                    "tech": c_tech,
                     "raw_target": raw_target,
                     "url": url,
                     "reason": reason,
@@ -590,8 +603,9 @@ def build_advanced_excel_report():
     high_risk_records.sort(key=lambda x: (not x["is_new"], x["priority"], x["raw_target"], x["url"]))
     
     ws_high = wb.create_sheet(title="🚨 High Risk (고위험군)")
-    ws_high.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "타겟 도메인", "고위험 경로 (Endpoint)", "탐지 사유"])
-    for c in range(1, 10): 
+    # ✨ 고위험군 시트에도 웹 서버 및 기술 스택 추가
+    ws_high.append(["No", "🔥 신규여부", "🌟 신규 서브", "소스 출처", "발견된 JS 파일명", "응답 상태", "웹 서버", "기술 스택", "타겟 도메인", "고위험 경로 (Endpoint)", "탐지 사유"])
+    for c in range(1, 12): 
         ws_high.cell(1, c).font = font_header
         ws_high.cell(1, c).fill = fill_header
         ws_high.cell(1, c).alignment = align_center
@@ -599,15 +613,15 @@ def build_advanced_excel_report():
 
     high_risk_idx = 2
     for hr in high_risk_records:
-        ws_high.append([high_risk_idx - 1, hr["is_new_mark"], hr["sub_mark"], escape_formula(hr["tools_str"]), escape_formula(hr["files_str"]), hr["current_status"], escape_formula(hr["raw_target"]), escape_formula(hr["url"]), escape_formula(hr["reason"])])
-        for c in range(1, 10):
+        ws_high.append([high_risk_idx - 1, hr["is_new_mark"], hr["sub_mark"], escape_formula(hr["tools_str"]), escape_formula(hr["files_str"]), hr["current_status"], escape_formula(hr["server"]), escape_formula(hr["tech"]), escape_formula(hr["raw_target"]), escape_formula(hr["url"]), escape_formula(hr["reason"])])
+        for c in range(1, 12):
             cell = ws_high.cell(high_risk_idx, c)
             cell.font = font_data; cell.border = thin_border
             if (high_risk_idx % 2) == 0: cell.fill = fill_zebra
             if c == 2 and hr["is_new"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             if c == 3 and hr["is_new_sub"]: cell.font = Font(name='Malgun Gothic', bold=True, color='E83E8C')
             if c == 6: cell.fill = PatternFill(start_color=get_status_color(hr["current_status"]), end_color=get_status_color(hr["current_status"]), fill_type='solid'); cell.font = Font(name='Malgun Gothic', bold=True, color='FFFFFF'); cell.alignment = align_center
-            elif c in [4, 5, 7, 8, 9]: cell.alignment = align_left
+            elif c in [4, 5, 7, 8, 9, 10, 11]: cell.alignment = align_left
             else: cell.alignment = align_center
         high_risk_idx += 1
 
@@ -667,6 +681,7 @@ def build_advanced_excel_report():
             elif header == "발견된 JS 파일명": sheet.column_dimensions[col_letter].width = 50  
             elif header in ["탐지 사유", "Gemini AI 지능형 정보 노출 분석 가이드", "서브도메인 (Subdomain)"]: sheet.column_dimensions[col_letter].width = 55  
             elif header in ["📊 누적 / 🔥 신규 URL", "jsluice (누적 / 신규)", "🌟 서브도메인 (누적/신규)", "최초 발견일 (Wayback Machine)"]: sheet.column_dimensions[col_letter].width = 28
+            elif header in ["기술 스택", "웹 서버"]: sheet.column_dimensions[col_letter].width = 25
             elif header in ["응답 상태", "🔥 신규여부", "🌟 신규 서브", "🔮 잠재적 위험 확률", "📡 응답 상태"]: sheet.column_dimensions[col_letter].width = 18
             else: sheet.column_dimensions[col_letter].width = 18
 
