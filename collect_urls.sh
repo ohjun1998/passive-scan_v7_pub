@@ -13,7 +13,7 @@ mkdir -p results
 touch global_js_db.txt
 
 echo "==================================================================="
-echo "🚀 [Node-$GROUP] 정찰 파이프라인 가동 (Waybackurls + GAU + Katana)"
+echo "🚀 [Node-$GROUP] 정찰 파이프라인 가동 (Waybackurls + GAU + Katana 병렬화)"
 echo "==================================================================="
 
 for DOMAIN in $(cat $TARGETS_FILE); do
@@ -22,56 +22,68 @@ for DOMAIN in $(cat $TARGETS_FILE); do
   
   echo ""
   echo "=================================================="
-  echo "🎯 [Target: $SAFE_DOMAIN] 데이터 수집 시작"
+  echo "🎯 [Target: $SAFE_DOMAIN] 데이터 수집 시작 (병렬 처리)"
   echo "=================================================="
 
   # ---------------------------------------------------------
-  # 1. Waybackurls (과거 아카이브 추출)
+  # 1. Waybackurls (과거 아카이브 추출) - 백그라운드 실행
   # ---------------------------------------------------------
-  echo "  [+] 🏛️ [Waybackurls] 과거 아카이브 URL 추출 중..."
-  echo $DOMAIN | waybackurls > results/${SAFE_DOMAIN}_waybackurls_raw.txt
-  
-  if [ -s "results/${SAFE_DOMAIN}_waybackurls_raw.txt" ]; then
-    cat results/${SAFE_DOMAIN}_waybackurls_raw.txt | uro > results/${SAFE_DOMAIN}_waybackurls.txt
-    WAYBACK_COUNT=$(wc -l < results/${SAFE_DOMAIN}_waybackurls.txt)
-    echo "  [+] 🔍 [Waybackurls] 중복 제거 완료: 총 ${WAYBACK_COUNT}개의 URL 확보"
-  else
-    echo "  [-] 🔍 [Waybackurls] 발견된 내역 없음"
-    touch results/${SAFE_DOMAIN}_waybackurls.txt
-  fi
-  rm -f results/${SAFE_DOMAIN}_waybackurls_raw.txt
+  (
+    echo "  [+] 🏛️ [Waybackurls] 과거 아카이브 URL 추출 중..."
+    echo $DOMAIN | waybackurls > results/${SAFE_DOMAIN}_waybackurls_raw.txt
+    
+    if [ -s "results/${SAFE_DOMAIN}_waybackurls_raw.txt" ]; then
+      cat results/${SAFE_DOMAIN}_waybackurls_raw.txt | uro > results/${SAFE_DOMAIN}_waybackurls.txt
+      WAYBACK_COUNT=$(wc -l < results/${SAFE_DOMAIN}_waybackurls.txt)
+      echo "  [+] 🔍 [Waybackurls] 완료: 총 ${WAYBACK_COUNT}개의 URL 확보"
+    else
+      echo "  [-] 🔍 [Waybackurls] 발견된 내역 없음"
+      touch results/${SAFE_DOMAIN}_waybackurls.txt
+    fi
+    rm -f results/${SAFE_DOMAIN}_waybackurls_raw.txt
+  ) &
 
   # ---------------------------------------------------------
-  # 2. GAU (GetAllUrls - 위협 인텔리전스 소스)
+  # 2. GAU (GetAllUrls - 위협 인텔리전스 소스) - 백그라운드 실행
   # ---------------------------------------------------------
-  echo "  [+] 🌐 [GAU] 외부 위협 인텔리전스(AlienVault 등) URL 수집 중..."
-  gau --threads 5 --retries 2 $DOMAIN > results/${SAFE_DOMAIN}_gau_raw.txt
-  
-  if [ -s "results/${SAFE_DOMAIN}_gau_raw.txt" ]; then
-    cat results/${SAFE_DOMAIN}_gau_raw.txt | uro > results/${SAFE_DOMAIN}_gau.txt
-    GAU_COUNT=$(wc -l < results/${SAFE_DOMAIN}_gau.txt)
-    echo "  [+] 🔍 [GAU] 중복 제거 완료: 총 ${GAU_COUNT}개의 URL 확보"
-  else
-    echo "  [-] 🔍 [GAU] 발견된 내역 없음"
-    touch results/${SAFE_DOMAIN}_gau.txt
-  fi
-  rm -f results/${SAFE_DOMAIN}_gau_raw.txt
+  (
+    echo "  [+] 🌐 [GAU] 외부 위협 인텔리전스 URL 수집 중..."
+    gau --threads 5 --retries 2 $DOMAIN > results/${SAFE_DOMAIN}_gau_raw.txt
+    
+    if [ -s "results/${SAFE_DOMAIN}_gau_raw.txt" ]; then
+      cat results/${SAFE_DOMAIN}_gau_raw.txt | uro > results/${SAFE_DOMAIN}_gau.txt
+      GAU_COUNT=$(wc -l < results/${SAFE_DOMAIN}_gau.txt)
+      echo "  [+] 🔍 [GAU] 완료: 총 ${GAU_COUNT}개의 URL 확보"
+    else
+      echo "  [-] 🔍 [GAU] 발견된 내역 없음"
+      touch results/${SAFE_DOMAIN}_gau.txt
+    fi
+    rm -f results/${SAFE_DOMAIN}_gau_raw.txt
+  ) &
 
   # ---------------------------------------------------------
-  # 3. Katana (스텔스 크롤링 - 서버 부하 방지)
+  # 3. Katana (스텔스 크롤링 - 서버 부하 방지) - 백그라운드 실행
   # ---------------------------------------------------------
-  echo "  [+] 🕷️ [Katana] 스텔스(안전) 모드 크롤링 가동 (-d 2 -c 5 -rl 50)..."
-  katana -u https://$SAFE_DOMAIN -d 2 -c 5 -rl 50 -jc -silent > results/${SAFE_DOMAIN}_katana_raw.txt
-  
-  if [ -s "results/${SAFE_DOMAIN}_katana_raw.txt" ]; then
-    cat results/${SAFE_DOMAIN}_katana_raw.txt | uro > results/${SAFE_DOMAIN}_katana.txt
-    KATANA_COUNT=$(wc -l < results/${SAFE_DOMAIN}_katana.txt)
-    echo "  [+] 🔍 [Katana] 스텔스 크롤링 완료: 총 ${KATANA_COUNT}개의 고가치 경로 식별"
-  else
-    echo "  [-] 🔍 [Katana] 스텔스 크롤링 결과 없음"
-    touch results/${SAFE_DOMAIN}_katana.txt
-  fi
-  rm -f results/${SAFE_DOMAIN}_katana_raw.txt
+  (
+    echo "  [+] 🕷️ [Katana] 스텔스(안전) 모드 크롤링 가동..."
+    katana -u https://$SAFE_DOMAIN -d 2 -c 5 -rl 50 -jc -silent > results/${SAFE_DOMAIN}_katana_raw.txt
+    
+    if [ -s "results/${SAFE_DOMAIN}_katana_raw.txt" ]; then
+      cat results/${SAFE_DOMAIN}_katana_raw.txt | uro > results/${SAFE_DOMAIN}_katana.txt
+      KATANA_COUNT=$(wc -l < results/${SAFE_DOMAIN}_katana.txt)
+      echo "  [+] 🔍 [Katana] 완료: 총 ${KATANA_COUNT}개의 고가치 경로 식별"
+    else
+      echo "  [-] 🔍 [Katana] 스텔스 크롤링 결과 없음"
+      touch results/${SAFE_DOMAIN}_katana.txt
+    fi
+    rm -f results/${SAFE_DOMAIN}_katana_raw.txt
+  ) &
+
+  # ---------------------------------------------------------
+  # ⚡ 3개의 스캐너가 모두 끝날 때까지 대기
+  # ---------------------------------------------------------
+  wait
+  echo "  [*] ✅ 해당 도메인의 스캔(Waybackurls, GAU, Katana)이 병렬로 완료되었습니다!"
 
   # ---------------------------------------------------------
   # 4. JS 파일 추출 및 스마트 다운로드 (방어 로직)
