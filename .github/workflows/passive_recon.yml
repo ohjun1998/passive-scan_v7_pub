@@ -198,7 +198,6 @@ jobs:
           echo "⚖️ 밸런스 모드: 노드당 초당 10회 제한 (글로벌 200 RPS) / 5 쓰레드"
           echo "========================================================="
           
-          # ✨ 여기에 -td 와 -server 옵션을 추가했습니다!
           httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -td -server -random-agent -rl 10 -t 5 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
@@ -230,8 +229,8 @@ jobs:
       uses: actions/setup-python@v5
       with: { python-version: '3.10' }
 
-    - name: Python 라이브러리 설치
-      run: pip install openpyxl requests aiohttp
+    - name: Python 라이브러리 설치 (googlesearch-python 추가됨)
+      run: pip install openpyxl requests aiohttp googlesearch-python
 
     - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
@@ -265,7 +264,7 @@ jobs:
         unzip -P "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" passive_recon_report_secured.zip || true
         cd ..
 
-    - name: 지능형 컬러 엑셀 리포트 제작
+    - name: 지능형 컬러 엑셀 리포트 제작 (Google Dorking 포함)
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: python -u txt_to_excel.py
