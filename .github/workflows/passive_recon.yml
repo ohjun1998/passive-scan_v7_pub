@@ -1,4 +1,4 @@
-name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
+Name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 
 on:
   workflow_dispatch:
@@ -198,8 +198,8 @@ jobs:
           echo "⚖️ 밸런스 모드: 노드당 초당 10회 제한 (글로벌 200 RPS) / 5 쓰레드"
           echo "========================================================="
           
-          # ✅ [밸런스 모드] -rl 10 (초당 10회 제한), -t 5 (5 쓰레드)로 효율 및 속도 향상
-          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -random-agent -rl 10 -t 5 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
+          # ✨ 여기에 -td 와 -server 옵션을 추가했습니다!
+          httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -td -server -random-agent -rl 10 -t 5 -timeout 5 -retries 1 -json -silent | tee strike_out/httpx_results_${{ matrix.group }}.json | jq -r --unbuffered '"[\(.status_code // "DEAD")] \(.url)"' | awk -v t="$TOTAL" '{print "    🎯 Live Check (" NR "/" t ") " $0; fflush()}'
         else
           touch strike_out/httpx_results_${{ matrix.group }}.json
         fi
