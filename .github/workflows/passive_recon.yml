@@ -267,7 +267,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (도메인 그룹화 적용)
+    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (중복 제거 및 도메인 그룹화)
       run: |
         mkdir -p reports/screenshot_report/images
         
@@ -276,24 +276,48 @@ jobs:
           echo "[+] 20대 노드에서 촬영된 모든 스크린샷 취합 완료!"
         fi
         
-        # 🚨 추가됨: 갤러리 앱 스팸 방지용 마커 생성
         touch reports/screenshot_report/.nomedia
         touch reports/screenshot_report/images/.nomedia
         
+        # 🚨 추가됨: hashlib 모듈을 이용한 완벽한 이미지 중복 스캐닝 및 파일 제거 로직
         cat << 'EOF' > generate_gallery.py
         import os
         import urllib.parse
+        import hashlib
         from collections import defaultdict
         
         img_dir = 'reports/screenshot_report/images'
         html_path = 'reports/screenshot_report/index.html'
         
         domain_groups = defaultdict(list)
+        seen_hashes = set()
+        removed_count = 0
         
         if os.path.exists(img_dir):
             valid_exts = ('.png', '.jpeg', '.jpg')
             for img in sorted(os.listdir(img_dir)):
                 if img.lower().endswith(valid_exts):
+                    filepath = os.path.join(img_dir, img)
+                    
+                    # 1. 파일 데이터 해시(지문) 계산
+                    try:
+                        with open(filepath, 'rb') as f:
+                            file_hash = hashlib.md5(f.read()).hexdigest()
+                    except Exception:
+                        continue
+                        
+                    # 2. 해시 비교로 중복 검출 시 파일 즉시 삭제
+                    if file_hash in seen_hashes:
+                        try:
+                            os.remove(filepath)
+                            removed_count += 1
+                        except OSError:
+                            pass
+                        continue
+                        
+                    seen_hashes.add(file_hash)
+                    
+                    # 3. 중복이 아닌 고유 이미지들만 갤러리 렌더링에 포함
                     display_name = img.rsplit('.', 1)[0]
                     img_url = urllib.parse.quote(img)
                     
@@ -306,6 +330,8 @@ jobs:
                         domain = "기타 (Unknown)"
                         
                     domain_groups[domain].append((img, display_name, img_url))
+        
+        print(f"[!] 중복 스크린샷 탐지 및 제거 완료 (총 {removed_count}개 삭제)")
         
         html_content = """<!DOCTYPE html>
         <html lang="ko">
@@ -331,8 +357,12 @@ jobs:
             <div class="header">
                 <h1 style="margin:0 0 10px 0;">📸 도메인별 통합 스크린샷 갤러리</h1>
                 <p style="margin:0; opacity: 0.9;">20대의 스캔 노드에서 촬영된 인프라 현황을 도메인 단위로 정리했습니다.</p>
-            </div>
         """
+        
+        if removed_count > 0:
+            html_content += f'<p style="margin:10px 0 0 0; color:#ffdd59; font-weight:bold;">🧹 중복 이미지 {removed_count}장 자동 제거 완료</p>'
+            
+        html_content += "</div>"
         
         for domain in sorted(domain_groups.keys()):
             count = len(domain_groups[domain])
