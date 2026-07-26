@@ -203,6 +203,9 @@ jobs:
 
     - name: 📸 분산 스크린샷 쾌속 촬영 (Gowitness)
       run: |
+        # 🚨 Ubuntu 24.04 Chrome Sandbox (AppArmor) 이슈 해결을 위한 커널 보안 파라미터 해제
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        
         if [ -s strike_out/httpx_results_${{ matrix.group }}.json ]; then
           echo "========================================================="
           echo "📸 [Gowitness] 200/40X 응답 반환 대상 분산 스크린샷 촬영"
