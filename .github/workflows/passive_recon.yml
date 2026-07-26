@@ -3,8 +3,6 @@ name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions 정각 병목 현상을 피해 17분에 실행되도록 설정
-    # KST 기준: 오전 4시 17분 (UTC 19:17), 오후 4시 17분 (UTC 07:17)
     - cron: '17 19 * * *'
     - cron: '17 7 * * *'
 
@@ -207,12 +205,12 @@ jobs:
         
         if [ -s strike_out/httpx_results_${{ matrix.group }}.json ]; then
           echo "========================================================="
-          echo "📸 [Gowitness] 200/40X 응답 반환 대상 분산 스크린샷 촬영"
+          echo "📸 [Gowitness] HTTP 200 응답 반환 대상 전체 분산 스크린샷 촬영"
           echo "========================================================="
           
-          jq -r 'select(.status_code != null and .status_code != "DEAD") | .url' strike_out/httpx_results_${{ matrix.group }}.json | sort -u > temp_live.txt
+          jq -r 'select(.status_code == 200) | .url' strike_out/httpx_results_${{ matrix.group }}.json | sort -u > temp_live.txt
           grep -iEv "%3c|%3e|<|>|%22|\"|%20| |\*|%2a|%27|'" temp_live.txt > clean_live.txt
-          head -n 200 clean_live.txt > live_urls.txt
+          mv clean_live.txt live_urls.txt
           
           if [ -s live_urls.txt ]; then
             gowitness scan file -f live_urls.txt --driver gorod --threads 4 --timeout 10 || true
@@ -269,22 +267,45 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 통합 스크린샷 HTML 갤러리 조립
+    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (도메인 그룹화 적용)
       run: |
         mkdir -p reports/screenshot_report/images
         
-        # 각 분산 노드에서 모인 스크린샷 이미지들을 한 폴더로 병합
         if [ -d "results/screenshots" ]; then
           cp results/screenshots/* reports/screenshot_report/images/ 2>/dev/null || true
           echo "[+] 20대 노드에서 촬영된 모든 스크린샷 취합 완료!"
         fi
         
-        # 🚨 수정됨: PNG뿐만 아니라 JPEG, JPG 확장자도 함께 인식하여 갤러리에 추가하도록 로직 변경
+        # 🚨 추가됨: 갤러리 앱 스팸 방지용 마커 생성
+        touch reports/screenshot_report/.nomedia
+        touch reports/screenshot_report/images/.nomedia
+        
         cat << 'EOF' > generate_gallery.py
         import os
+        import urllib.parse
+        from collections import defaultdict
         
         img_dir = 'reports/screenshot_report/images'
         html_path = 'reports/screenshot_report/index.html'
+        
+        domain_groups = defaultdict(list)
+        
+        if os.path.exists(img_dir):
+            valid_exts = ('.png', '.jpeg', '.jpg')
+            for img in sorted(os.listdir(img_dir)):
+                if img.lower().endswith(valid_exts):
+                    display_name = img.rsplit('.', 1)[0]
+                    img_url = urllib.parse.quote(img)
+                    
+                    try:
+                        if '---' in display_name:
+                            domain = display_name.split('---')[1].split('-')[0]
+                        else:
+                            domain = "기타 (Unknown)"
+                    except Exception:
+                        domain = "기타 (Unknown)"
+                        
+                    domain_groups[domain].append((img, display_name, img_url))
         
         html_content = """<!DOCTYPE html>
         <html lang="ko">
@@ -292,47 +313,55 @@ jobs:
             <meta charset="UTF-8">
             <title>📸 Passive Recon - Screenshot Gallery</title>
             <style>
-                body { font-family: 'Segoe UI', sans-serif; background-color: #f8f9fa; padding: 20px; margin: 0; }
-                .header { text-align: center; margin-bottom: 30px; background: #2F3542; color: white; padding: 20px; border-radius: 8px; }
-                .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
-                .card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; transition: transform 0.2s; }
-                .card:hover { transform: translateY(-5px); box-shadow: 0 6px 12px rgba(0,0,0,0.15); }
-                .card img { width: 100%; height: auto; border-bottom: 1px solid #eee; display: block; }
-                .card .info { padding: 12px; font-size: 13px; word-break: break-all; text-align: center; }
-                .card .info a { color: #007bff; text-decoration: none; font-weight: bold; }
-                .card .info a:hover { text-decoration: underline; }
+                body { font-family: 'Segoe UI', sans-serif; background-color: #f3f4f6; padding: 20px; margin: 0; }
+                .header { text-align: center; margin-bottom: 40px; background: #2F3542; color: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                .domain-section { margin-bottom: 50px; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+                .domain-title { border-bottom: 3px solid #3742fa; padding-bottom: 12px; margin-top: 0; margin-bottom: 25px; color: #2f3542; font-size: 24px; display: flex; align-items: center; justify-content: space-between; }
+                .domain-count { font-size: 16px; color: #747d8c; background: #f1f2f6; padding: 5px 12px; border-radius: 20px; }
+                .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 25px; }
+                .card { background: #ffffff; border: 1px solid #dfe4ea; border-radius: 8px; overflow: hidden; transition: all 0.2s ease-in-out; }
+                .card:hover { transform: translateY(-5px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); border-color: #3742fa; }
+                .card img { width: 100%; height: 250px; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #f1f2f6; display: block; }
+                .card .info { padding: 15px; font-size: 13px; word-break: break-all; text-align: center; }
+                .card .info a { color: #1e90ff; text-decoration: none; font-weight: 600; line-height: 1.4; }
+                .card .info a:hover { text-decoration: underline; color: #3742fa; }
             </style>
         </head>
         <body>
             <div class="header">
-                <h1>📸 통합 스크린샷 갤러리 (Distributed Screenshots)</h1>
-                <p>20대의 스캔 노드에서 촬영된 살아있는 엔드포인트들의 시각적 요약입니다.</p>
+                <h1 style="margin:0 0 10px 0;">📸 도메인별 통합 스크린샷 갤러리</h1>
+                <p style="margin:0; opacity: 0.9;">20대의 스캔 노드에서 촬영된 인프라 현황을 도메인 단위로 정리했습니다.</p>
             </div>
-            <div class="gallery">
         """
         
-        if os.path.exists(img_dir):
-            valid_exts = ('.png', '.jpeg', '.jpg')
-            for img in sorted(os.listdir(img_dir)):
-                if img.lower().endswith(valid_exts):
-                    # 파일명에서 확장자를 제외한 부분만 표시 이름으로 사용
-                    display_name = img.rsplit('.', 1)[0]
-                    html_content += f'''
-                    <div class="card">
-                        <a href="images/{img}" target="_blank">
-                            <img src="images/{img}" alt="{display_name}" loading="lazy">
-                        </a>
-                        <div class="info">
-                            <a href="images/{img}" target="_blank">{display_name}</a>
-                        </div>
+        for domain in sorted(domain_groups.keys()):
+            count = len(domain_groups[domain])
+            html_content += f'''
+            <div class="domain-section">
+                <h2 class="domain-title">
+                    <span>🌐 {domain}</span>
+                    <span class="domain-count">총 {count}개 페이지</span>
+                </h2>
+                <div class="gallery">
+            '''
+            for img, display_name, img_url in domain_groups[domain]:
+                html_content += f'''
+                <div class="card">
+                    <a href="images/{img_url}" target="_blank">
+                        <img src="images/{img_url}" alt="{display_name}" loading="lazy">
+                    </a>
+                    <div class="info">
+                        <a href="images/{img_url}" target="_blank">{display_name}</a>
                     </div>
-                    '''
-                    
-        html_content += "</div></body></html>"
+                </div>
+                '''
+            html_content += "</div></div>"
+            
+        html_content += "</body></html>"
         
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
-        print("[+] HTML 갤러리 인덱스 파일 생성 완료!")
+        print(f"[+] HTML 갤러리 도메인별 분류 완료! (총 {len(domain_groups)}개 도메인)")
         EOF
         
         python3 generate_gallery.py
