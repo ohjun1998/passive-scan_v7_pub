@@ -168,7 +168,6 @@ jobs:
     - name: Httpx, uro, Gowitness 설치
       run: |
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-        # 🚨 쿠키 파싱 에러 방지를 위해 최신 버전(v3)으로 고정
         go install github.com/sensepost/gowitness@latest
         pip install uro
         echo "$HOME/go/bin" >> $GITHUB_PATH
@@ -204,7 +203,6 @@ jobs:
 
     - name: 📸 분산 스크린샷 쾌속 촬영 (Gowitness)
       run: |
-        # 🚨 Ubuntu 24.04 Chrome Sandbox (AppArmor) 이슈 해결을 위한 커널 보안 파라미터 해제
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         
         if [ -s strike_out/httpx_results_${{ matrix.group }}.json ]; then
@@ -212,20 +210,13 @@ jobs:
           echo "📸 [Gowitness] 200/40X 응답 반환 대상 분산 스크린샷 촬영"
           echo "========================================================="
           
-          # 1. Broken pipe 방지: 임시 파일(temp_live.txt)로 먼저 전체를 저장
           jq -r 'select(.status_code != null and .status_code != "DEAD") | .url' strike_out/httpx_results_${{ matrix.group }}.json | sort -u > temp_live.txt
-          
-          # 2. 🚨 치명적 Panic 에러 방지: HTML 태그나 특수문자가 포함된 기형적인 URL 사전 필터링
           grep -iEv "%3c|%3e|<|>|%22|\"|%20| |\*|%2a|%27|'" temp_live.txt > clean_live.txt
-          
-          # 3. 정제된 임시 파일에서 200개만 안전하게 추출
           head -n 200 clean_live.txt > live_urls.txt
           
           if [ -s live_urls.txt ]; then
-            # 🚨 WebSocket Timeout 방지를 위해 gorod 적용 + Panic 발생 시 파이프라인이 멈추지 않도록 `|| true` 추가
             gowitness scan file -f live_urls.txt --driver gorod --threads 4 --timeout 10 || true
             
-            # 찍힌 사진들(screenshots 폴더)을 본부(Job 4)로 보내기 위해 strike_out 폴더 안으로 이동
             if [ -d "screenshots" ]; then
               mv screenshots strike_out/
               echo "[+] 스크린샷 촬영 및 적재 완료!"
@@ -288,7 +279,7 @@ jobs:
           echo "[+] 20대 노드에서 촬영된 모든 스크린샷 취합 완료!"
         fi
         
-        # Python을 이용해 보기 편한 HTML 갤러리 자동 생성
+        # 🚨 수정됨: PNG뿐만 아니라 JPEG, JPG 확장자도 함께 인식하여 갤러리에 추가하도록 로직 변경
         cat << 'EOF' > generate_gallery.py
         import os
         
@@ -321,9 +312,11 @@ jobs:
         """
         
         if os.path.exists(img_dir):
+            valid_exts = ('.png', '.jpeg', '.jpg')
             for img in sorted(os.listdir(img_dir)):
-                if img.endswith('.png'):
-                    display_name = img.replace('.png', '')
+                if img.lower().endswith(valid_exts):
+                    # 파일명에서 확장자를 제외한 부분만 표시 이름으로 사용
+                    display_name = img.rsplit('.', 1)[0]
                     html_content += f'''
                     <div class="card">
                         <a href="images/{img}" target="_blank">
