@@ -267,7 +267,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (중복 제거 및 도메인 그룹화)
+    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (원본 URL 1:1 매칭 & 중복 제거)
       run: |
         mkdir -p reports/screenshot_report/images
         
@@ -276,19 +276,40 @@ jobs:
           echo "[+] 20대 노드에서 촬영된 모든 스크린샷 취합 완료!"
         fi
         
-        touch reports/screenshot_report/.nomedia
-        touch reports/screenshot_report/images/.nomedia
+        # 🚨 참고: 스마트폰 갤러리에 뜨도록 .nomedia 파일 생성 코드는 아예 삭제했습니다!
         
-        # 🚨 추가됨: hashlib 모듈을 이용한 완벽한 이미지 중복 스캐닝 및 파일 제거 로직
         cat << 'EOF' > generate_gallery.py
         import os
         import urllib.parse
         import hashlib
+        import json
+        import glob
         from collections import defaultdict
         
         img_dir = 'reports/screenshot_report/images'
         html_path = 'reports/screenshot_report/index.html'
         
+        # 1. Httpx 결과(JSON)를 바탕으로 파일명과 실제 URL을 매핑하는 딕셔너리 생성
+        url_mapping = {}
+        for json_file in glob.glob('results/httpx_results_*.json'):
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if not line.strip(): continue
+                        try:
+                            data = json.loads(line)
+                            if data.get('status_code') == 200:
+                                original_url = data.get('url', '')
+                                if original_url:
+                                    # Gowitness의 특유의 파일명 변환 로직(역슬래시, 콜론 등을 하이픈으로 치환)을 그대로 모방하여 키(Key) 생성
+                                    url_stripped = original_url.rstrip("/")
+                                    safe_name = url_stripped.replace("://", "---").replace(":", "-").replace("/", "-").replace("?", "-").replace("=", "-").replace("&", "-")
+                                    url_mapping[safe_name] = original_url
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+                
         domain_groups = defaultdict(list)
         seen_hashes = set()
         removed_count = 0
@@ -299,14 +320,13 @@ jobs:
                 if img.lower().endswith(valid_exts):
                     filepath = os.path.join(img_dir, img)
                     
-                    # 1. 파일 데이터 해시(지문) 계산
+                    # 2. 이미지 지문(Hash) 추출 및 중복 제거
                     try:
                         with open(filepath, 'rb') as f:
                             file_hash = hashlib.md5(f.read()).hexdigest()
                     except Exception:
                         continue
                         
-                    # 2. 해시 비교로 중복 검출 시 파일 즉시 삭제
                     if file_hash in seen_hashes:
                         try:
                             os.remove(filepath)
@@ -317,9 +337,22 @@ jobs:
                         
                     seen_hashes.add(file_hash)
                     
-                    # 3. 중복이 아닌 고유 이미지들만 갤러리 렌더링에 포함
                     display_name = img.rsplit('.', 1)[0]
                     img_url = urllib.parse.quote(img)
+                    
+                    # 3. 매핑 딕셔너리에서 원본 사이트 주소 찾기
+                    target_url = url_mapping.get(display_name)
+                    
+                    # 만약 못 찾았을 경우, 문자열 조작으로 최대한 원본 URL 복원 시도 (Fallback)
+                    if not target_url:
+                        if "---" in display_name:
+                            scheme_rest = display_name.split("---", 1)
+                            if len(scheme_rest) == 2:
+                                target_url = f"{scheme_rest[0]}://" + scheme_rest[1].replace("-", "/")
+                        
+                        # 그래도 복원이 안 되면 갤러리 내 원본 이미지 파일로 대체 링크
+                        if not target_url:
+                            target_url = f"images/{img_url}"
                     
                     try:
                         if '---' in display_name:
@@ -329,14 +362,16 @@ jobs:
                     except Exception:
                         domain = "기타 (Unknown)"
                         
-                    domain_groups[domain].append((img, display_name, img_url))
+                    domain_groups[domain].append((img, display_name, img_url, target_url))
         
         print(f"[!] 중복 스크린샷 탐지 및 제거 완료 (총 {removed_count}개 삭제)")
         
+        # 4. HTML 렌더링 로직 (메인 링크는 target_url, 캡쳐 사진 보기는 img_url 연결)
         html_content = """<!DOCTYPE html>
         <html lang="ko">
         <head>
             <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>📸 Passive Recon - Screenshot Gallery</title>
             <style>
                 body { font-family: 'Segoe UI', sans-serif; background-color: #f3f4f6; padding: 20px; margin: 0; }
@@ -349,18 +384,20 @@ jobs:
                 .card:hover { transform: translateY(-5px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); border-color: #3742fa; }
                 .card img { width: 100%; height: 250px; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #f1f2f6; display: block; }
                 .card .info { padding: 15px; font-size: 13px; word-break: break-all; text-align: center; }
-                .card .info a { color: #1e90ff; text-decoration: none; font-weight: 600; line-height: 1.4; }
-                .card .info a:hover { text-decoration: underline; color: #3742fa; }
+                .card .info .main-link { color: #1e90ff; text-decoration: none; font-weight: 600; line-height: 1.4; display: block; margin-bottom: 8px; }
+                .card .info .main-link:hover { text-decoration: underline; color: #3742fa; }
+                .card .info .img-link { font-size: 11px; color: #747d8c; text-decoration: none; background: #f1f2f6; padding: 4px 8px; border-radius: 4px; display: inline-block; }
+                .card .info .img-link:hover { background: #dfe4ea; color: #2f3542; }
             </style>
         </head>
         <body>
             <div class="header">
                 <h1 style="margin:0 0 10px 0;">📸 도메인별 통합 스크린샷 갤러리</h1>
-                <p style="margin:0; opacity: 0.9;">20대의 스캔 노드에서 촬영된 인프라 현황을 도메인 단위로 정리했습니다.</p>
+                <p style="margin:0; opacity: 0.9;">이미지나 파란색 링크를 클릭하시면 해당 웹사이트로 바로 진입합니다.</p>
         """
         
         if removed_count > 0:
-            html_content += f'<p style="margin:10px 0 0 0; color:#ffdd59; font-weight:bold;">🧹 중복 이미지 {removed_count}장 자동 제거 완료</p>'
+            html_content += f'<p style="margin:10px 0 0 0; color:#ffdd59; font-weight:bold;">🧹 픽셀 중복 이미지 {removed_count}장 자동 제거 완료</p>'
             
         html_content += "</div>"
         
@@ -374,14 +411,15 @@ jobs:
                 </h2>
                 <div class="gallery">
             '''
-            for img, display_name, img_url in domain_groups[domain]:
+            for img, display_name, img_url, target_url in domain_groups[domain]:
                 html_content += f'''
                 <div class="card">
-                    <a href="images/{img_url}" target="_blank">
+                    <a href="{target_url}" target="_blank" title="원본 사이트로 이동">
                         <img src="images/{img_url}" alt="{display_name}" loading="lazy">
                     </a>
                     <div class="info">
-                        <a href="images/{img_url}" target="_blank">{display_name}</a>
+                        <a href="{target_url}" class="main-link" target="_blank" title="원본 사이트로 이동">{display_name}</a>
+                        <a href="images/{img_url}" class="img-link" target="_blank">📷 캡쳐 원본 보기</a>
                     </div>
                 </div>
                 '''
