@@ -168,7 +168,7 @@ jobs:
     - name: Httpx, uro, Gowitness 설치
       run: |
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-        go install github.com/sensepost/gowitness@v2.5.1
+        go install github.com/sensepost/gowitness@v2.4.2
         pip install uro
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
