@@ -215,12 +215,15 @@ jobs:
           # 1. Broken pipe 방지: 임시 파일(temp_live.txt)로 먼저 전체를 저장
           jq -r 'select(.status_code != null and .status_code != "DEAD") | .url' strike_out/httpx_results_${{ matrix.group }}.json | sort -u > temp_live.txt
           
-          # 2. 임시 파일에서 200개만 안전하게 추출
-          head -n 200 temp_live.txt > live_urls.txt
+          # 2. 🚨 치명적 Panic 에러 방지: HTML 태그나 특수문자가 포함된 기형적인 URL 사전 필터링
+          grep -iEv "%3c|%3e|<|>|%22|\"|%20| |\*|%2a|%27|'" temp_live.txt > clean_live.txt
+          
+          # 3. 정제된 임시 파일에서 200개만 안전하게 추출
+          head -n 200 clean_live.txt > live_urls.txt
           
           if [ -s live_urls.txt ]; then
-            # 🚨 WebSocket Timeout 방지를 위해 gorod 드라이버 적용 및 v3 문법 적용
-            gowitness scan file -f live_urls.txt --driver gorod --threads 4 --timeout 10
+            # 🚨 WebSocket Timeout 방지를 위해 gorod 적용 + Panic 발생 시 파이프라인이 멈추지 않도록 `|| true` 추가
+            gowitness scan file -f live_urls.txt --driver gorod --threads 4 --timeout 10 || true
             
             # 찍힌 사진들(screenshots 폴더)을 본부(Job 4)로 보내기 위해 strike_out 폴더 안으로 이동
             if [ -d "screenshots" ]; then
