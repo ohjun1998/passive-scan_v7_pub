@@ -219,9 +219,8 @@ jobs:
           head -n 200 temp_live.txt > live_urls.txt
           
           if [ -s live_urls.txt ]; then
-            # 🚨 Gowitness v3 문법 적용 (scan file -f) 
-            # 워커 메모리 보호를 위해 기본 쓰레드(4개)로 안전하게 실행합니다.
-            gowitness scan file -f live_urls.txt
+            # 🚨 WebSocket Timeout 방지를 위해 gorod 드라이버 적용 및 v3 문법 적용
+            gowitness scan file -f live_urls.txt --driver gorod --threads 4 --timeout 10
             
             # 찍힌 사진들(screenshots 폴더)을 본부(Job 4)로 보내기 위해 strike_out 폴더 안으로 이동
             if [ -d "screenshots" ]; then
