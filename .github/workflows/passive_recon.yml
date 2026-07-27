@@ -369,7 +369,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (전체화면 이전/다음 줌 기능 추가)
+    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (모바일 완벽 호환 Base64 내장형)
       run: |
         mkdir -p reports/screenshot_report/images
         
@@ -378,7 +378,7 @@ jobs:
         fi
         
         cat << 'EOF' > generate_gallery.py
-        import os, urllib.parse, hashlib, json, glob
+        import os, urllib.parse, hashlib, json, glob, base64, mimetypes
         from collections import defaultdict
         
         img_dir = 'reports/screenshot_report/images'
@@ -435,15 +435,26 @@ jobs:
                                 target_url = f"{scheme_rest[0]}://" + scheme_rest[1].replace("-", "/")
                         if not target_url:
                             target_url = f"images/{img_url}"
+                            
+                    # 💡 안드로이드 로컬 열기 정책(CORS/파일 접근 차단) 우회를 위해 이미지를 Base64로 강제 내장
+                    mime_type, _ = mimetypes.guess_type(filepath)
+                    if not mime_type: mime_type = "image/png"
+                    
+                    try:
+                        with open(filepath, 'rb') as img_f:
+                            b64_data = base64.b64encode(img_f.read()).decode('utf-8')
+                        base64_src = f"data:{mime_type};base64,{b64_data}"
+                    except Exception:
+                        base64_src = f"images/{img_url}" # 실패 시 기존 방식(fallback)
                     
                     try:
                         if '---' in display_name: domain = display_name.split('---')[1].split('-')[0]
                         else: domain = "기타 (Unknown)"
                     except Exception: domain = "기타 (Unknown)"
                         
-                    domain_groups[domain].append((img, display_name, img_url, target_url))
+                    domain_groups[domain].append((img, display_name, base64_src, target_url))
         
-        # 💡 HTML 뼈대 구성 (전체 화면 모달 및 화살표 버튼 CSS 추가)
+        # 💡 HTML 뼈대 구성 (전체 화면 모달 및 화살표 버튼 CSS)
         html_content = f"""<!DOCTYPE html>
         <html lang="ko">
         <head>
@@ -466,7 +477,7 @@ jobs:
                 .card .info {{ padding: 15px; font-size: 13px; word-break: break-all; text-align: center; }}
                 .card .info .main-link {{ color: #1e90ff; text-decoration: none; font-weight: 600; display: block; margin-bottom: 8px; }}
                 
-                /* 💡 전체 화면(모달) 팝업 CSS 및 화살표 스타일 */
+                /* 전체 화면 모달(팝업) CSS */
                 .modal {{ display: none; position: fixed; z-index: 9999; padding-top: 30px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.95); }}
                 .modal-content {{ margin: auto; display: block; max-width: 90%; max-height: 85vh; object-fit: contain; border-radius: 5px; }}
                 #caption {{ margin: auto; display: block; width: 80%; max-width: 700px; text-align: center; color: #fff; padding: 15px 0; height: 50px; font-size: 18px; font-weight: bold; word-break: break-all; }}
@@ -474,7 +485,7 @@ jobs:
                 .close-btn {{ position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; transition: 0.3s; cursor: pointer; }}
                 .close-btn:hover, .close-btn:focus {{ color: #bbb; text-decoration: none; cursor: pointer; }}
                 
-                /* 💡 이전/다음 화살표 버튼 CSS */
+                /* 화살표 버튼 CSS */
                 .modal-nav {{ cursor: pointer; position: absolute; top: 50%; width: auto; padding: 20px; margin-top: -50px; color: white; font-weight: bold; font-size: 40px; transition: 0.3s; user-select: none; border-radius: 5px; text-decoration: none; }}
                 .modal-nav.prev {{ left: 2%; }}
                 .modal-nav.next {{ right: 2%; }}
@@ -487,16 +498,15 @@ jobs:
                 {f'<p style="color:#ffdd59; font-weight:bold;">🧹 중복 이미지 {removed_count}장 제거됨</p>' if removed_count > 0 else ''}
             </div>"""
         
-        # 💡 각 이미지에 순차적인 index를 부여하여 이전/다음 추적이 가능하도록 변수 할당
         global_img_idx = 0
         
         for domain in sorted(domain_groups.keys()):
             html_content += f'<div class="domain-section"><h2 class="domain-title"><span>🌐 {domain}</span><span class="domain-count">총 {len(domain_groups[domain])}개</span></h2><div class="gallery">'
-            for img, display_name, img_url, target_url in domain_groups[domain]:
-                # 💡 class="gallery-img", data-caption 속성과 전역 인덱스를 사용하여 모달 연동
+            for img, display_name, base64_src, target_url in domain_groups[domain]:
+                # 💡 img src에 내장된 Base64 데이터를 직접 할당
                 html_content += f'''
                 <div class="card">
-                    <img class="gallery-img" src="images/{img_url}" data-caption="{display_name}" loading="lazy" onclick="openModal({global_img_idx})" title="클릭하여 확대보기">
+                    <img class="gallery-img" src="{base64_src}" data-caption="{display_name}" loading="lazy" onclick="openModal({global_img_idx})" title="클릭하여 확대보기">
                     <div class="info">
                         <a href="{target_url}" class="main-link" target="_blank" title="실제 웹사이트 열기">{display_name}</a>
                     </div>
@@ -504,7 +514,7 @@ jobs:
                 global_img_idx += 1
             html_content += "</div></div>"
             
-        # 💡 하단에 모달 HTML 구조 및 자바스크립트 슬라이더 로직 추가
+        # 💡 하단에 모달 HTML 구조 및 자바스크립트 슬라이더 로직
         html_content += '''
             <!-- 전체 화면 모달(팝업) 영역 -->
             <div id="imageModal" class="modal">
@@ -519,24 +529,20 @@ jobs:
                 let currentIndex = 0;
                 const images = document.getElementsByClassName('gallery-img');
 
-                // 모달 열기 함수 (클릭된 이미지의 인덱스를 받음)
                 function openModal(index) {
                     currentIndex = index;
                     updateModal();
                     document.getElementById('imageModal').style.display = 'block';
                 }
 
-                // 모달 닫기 함수
                 function closeModal() {
                     document.getElementById('imageModal').style.display = 'none';
                 }
                 
-                // 이전/다음 버튼 동작 함수
                 function changeImage(step) {
                     if (images.length === 0) return;
                     currentIndex += step;
                     
-                    // 끝에 도달하면 반대편 처음/끝으로 루프
                     if (currentIndex >= images.length) {
                         currentIndex = 0;
                     } else if (currentIndex < 0) {
@@ -545,7 +551,6 @@ jobs:
                     updateModal();
                 }
 
-                // 현재 인덱스에 맞춰 모달 창 안의 이미지와 캡션을 교체
                 function updateModal() {
                     if (images.length === 0) return;
                     const img = images[currentIndex];
@@ -553,14 +558,12 @@ jobs:
                     document.getElementById('caption').innerText = img.getAttribute('data-caption');
                 }
                 
-                // 모달 뒷배경(검은색)을 클릭해도 모달 닫힘
                 document.getElementById('imageModal').addEventListener('click', function(e) {
                     if (e.target === this) {
                         closeModal();
                     }
                 });
 
-                // 키보드 지원: ESC(닫기), 좌우 방향키(이전/다음)
                 document.addEventListener('keydown', function(event) {
                     if (document.getElementById('imageModal').style.display === 'block') {
                         if (event.key === "Escape") {
