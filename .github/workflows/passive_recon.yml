@@ -232,7 +232,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 5] 스크린샷 캡처 하이브리드 부대 (에러 로그 숨김 처리 완료)
+  # [Job 5] 스크린샷 캡처 하이브리드 부대 (인코딩 깨짐 해결)
   # ==========================================
   screenshot-strike:
     runs-on: ubuntu-latest
@@ -242,13 +242,15 @@ jobs:
         group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
       fail-fast: false
     steps:
-    - name: Gowitness 및 필수 패키지 설치 (한글 폰트 포함)
+    - name: Gowitness 및 필수 패키지 설치 (한글 폰트 및 한국어 Locale 추가)
       run: |
         go install github.com/sensepost/gowitness@latest
         
-        # 💡 한글 깨짐 방지를 위한 폰트(nanum, noto-cjk) 및 sqlite 설치
+        # 💡 한글 폰트 설치 및 한국어 로케일(Locale) 팩 설치 후 설정 적용
         sudo apt-get update
-        sudo apt-get install -y sqlite3 fonts-nanum fonts-noto-cjk
+        sudo apt-get install -y sqlite3 fonts-nanum fonts-noto-cjk language-pack-ko locales
+        sudo locale-gen ko_KR.UTF-8
+        sudo update-locale LANG=ko_KR.UTF-8 LC_ALL=ko_KR.UTF-8
         sudo fc-cache -fv
         
         echo "$HOME/go/bin" >> $GITHUB_PATH
@@ -260,6 +262,11 @@ jobs:
         path: temp_chunks
 
     - name: 하이브리드 스크린샷 쾌속 촬영 가동 (깔끔한 콘솔 모드 & 지연 시간 추가)
+      # 💡 브라우저가 실행되는 스텝의 환경 변수(env)에 한국어 세팅 강제 주입
+      env:
+        LANG: ko_KR.UTF-8
+        LANGUAGE: ko_KR:ko
+        LC_ALL: ko_KR.UTF-8
       run: |
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         
@@ -290,7 +297,6 @@ jobs:
             echo "⚠️ 크래시 발생! 누락된 $MISSING_COUNT 개 타겟에 대해 [2단계] 정밀 단발 사격 개시..."
             echo "========================================================="
             
-            # 💡 단발 사격에도 동일하게 --delay 3 옵션 추가
             cat missing_urls.txt | xargs -n 1 -P 3 -I {} sh -c '
               echo "🎯 정밀 단발 캡처 중: {}"
               timeout 25s gowitness scan single -u "{}" --timeout 15 --delay 3 >> gowitness_fallback_${{ matrix.group }}.log 2>&1 || true
@@ -341,7 +347,7 @@ jobs:
       uses: actions/setup-python@v5
       with: { python-version: '3.10' }
 
-    - name: Python 라이브러리 설치 (💡 DuckDuckGo 라이브러리 추가)
+    - name: Python 라이브러리 설치
       run: pip install openpyxl requests aiohttp duckduckgo-search
 
     - name: 타겟 도메인 리스트 생성
