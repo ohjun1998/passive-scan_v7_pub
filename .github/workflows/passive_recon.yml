@@ -232,7 +232,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 5] 스크린샷 캡처 하이브리드 부대 (20대 분산) - 일괄 사격 + 단발 사격 패자부활전
+  # [Job 5] 스크린샷 캡처 하이브리드 부대 (에러 로그 숨김 처리 완료)
   # ==========================================
   screenshot-strike:
     runs-on: ubuntu-latest
@@ -242,10 +242,15 @@ jobs:
         group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
       fail-fast: false
     steps:
-    - name: Gowitness 및 sqlite 설치
+    - name: Gowitness 및 필수 패키지 설치 (한글 폰트 포함)
       run: |
         go install github.com/sensepost/gowitness@latest
-        sudo apt-get install sqlite3 -y
+        
+        # 💡 한글 깨짐 방지를 위한 폰트(nanum, noto-cjk) 및 sqlite 설치
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 fonts-nanum fonts-noto-cjk
+        sudo fc-cache -fv
+        
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
     - name: 균등 분배된 생존 타겟 다운로드
@@ -254,7 +259,7 @@ jobs:
         name: balanced-live-chunks
         path: temp_chunks
 
-    - name: 복호화 및 하이브리드 스크린샷 쾌속 촬영 가동
+    - name: 하이브리드 스크린샷 쾌속 촬영 가동 (깔끔한 콘솔 모드)
       run: |
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         
@@ -271,34 +276,28 @@ jobs:
           echo "🚀 [1단계] 고속 일괄 사격(Batch Mode) 개시..."
           echo "========================================================="
           
-          # 1. 먼저 가장 빠른 scan file 모드로 전체 타겟 캡처 시도 (타임아웃 10분 제한)
-          timeout 10m gowitness scan file -f "$TARGET_FILE" --timeout 15 >> gowitness_console_${{ matrix.group }}.log 2>&1 || true
+          timeout 10m gowitness scan file -f "$TARGET_FILE" --timeout 15 2>&1 | tee -a gowitness_console_${{ matrix.group }}.log | grep -viE "error|fail|timeout|canceled|deadline|refused|blocked|killed|panic|sigsegv|warn" || true
           
-          # 2. SQLite DB에서 실제로 스크린샷 캡처에 성공한 URL만 추출
           sqlite3 gowitness.sqlite3 "SELECT url FROM urls WHERE screenshot_path IS NOT NULL;" > success_urls.txt 2>/dev/null || touch success_urls.txt
           
-          # 3. 원본 할당 리스트와 성공 리스트를 비교하여 누락된(찍히지 않은) URL만 추출
           awk 'NR==FNR{a[$0];next} !($0 in a)' success_urls.txt "$TARGET_FILE" > missing_urls.txt
           
           MISSING_COUNT=$(wc -l < missing_urls.txt)
           
           if [ "$MISSING_COUNT" -gt 0 ]; then
             echo "========================================================="
-            echo "⚠️ 크래시/타임아웃 발생! 누락된 $MISSING_COUNT 개 타겟에 대해 [2단계] 정밀 단발 사격 개시..."
+            echo "⚠️ 크래시 발생! 누락된 $MISSING_COUNT 개 타겟에 대해 [2단계] 정밀 단발 사격 개시..."
             echo "========================================================="
             
-            # 누락된 타겟들만 병렬 단발 사격(Single-shot)으로 안전하게 처리
             cat missing_urls.txt | xargs -n 1 -P 3 -I {} sh -c '
-              echo "🎯 정밀 단발 사격 시도 중: {}"
+              echo "🎯 정밀 단발 캡처 중: {}"
               timeout 25s gowitness scan single -u "{}" --timeout 15 >> gowitness_fallback_${{ matrix.group }}.log 2>&1 || true
             '
-            # 패자부활전 로그 병합
             cat gowitness_fallback_${{ matrix.group }}.log >> gowitness_console_${{ matrix.group }}.log 2>/dev/null || true
           else
             echo "🎉 [1단계] 고속 일괄 사격만으로 모든 타겟 캡처가 완벽히 끝났습니다!"
           fi
           
-          # 로그 및 실패 내역 정리
           grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked|killed|panic|SIGSEGV" gowitness_console_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
           sqlite3 gowitness.sqlite3 -header -csv "SELECT url, response_code, response_reason, title FROM urls WHERE screenshot_path IS NULL OR response_reason != '';" > gowitness_failures_${{ matrix.group }}.csv 2>/dev/null || true
           
@@ -308,7 +307,6 @@ jobs:
             mv screenshots strike_out/
           fi
           
-          # 최종 파일 이동
           mv gowitness_console_${{ matrix.group }}.log strike_out/ 2>/dev/null || true
           mv screenshot_errors_${{ matrix.group }}.txt strike_out/ 2>/dev/null || true
           mv gowitness_failures_${{ matrix.group }}.csv strike_out/ 2>/dev/null || true
@@ -341,8 +339,8 @@ jobs:
       uses: actions/setup-python@v5
       with: { python-version: '3.10' }
 
-    - name: Python 라이브러리 설치
-      run: pip install openpyxl requests aiohttp googlesearch-python
+    - name: Python 라이브러리 설치 (💡 DuckDuckGo 라이브러리 추가)
+      run: pip install openpyxl requests aiohttp duckduckgo-search
 
     - name: 타겟 도메인 리스트 생성
       run: echo "${{ secrets.TARGET_DOMAINS }}" > targets.txt
