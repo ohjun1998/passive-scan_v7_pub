@@ -259,7 +259,7 @@ jobs:
         name: balanced-live-chunks
         path: temp_chunks
 
-    - name: 하이브리드 스크린샷 쾌속 촬영 가동 (깔끔한 콘솔 모드)
+    - name: 하이브리드 스크린샷 쾌속 촬영 가동 (깔끔한 콘솔 모드 & 지연 시간 추가)
       run: |
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         
@@ -276,7 +276,8 @@ jobs:
           echo "🚀 [1단계] 고속 일괄 사격(Batch Mode) 개시..."
           echo "========================================================="
           
-          timeout 10m gowitness scan file -f "$TARGET_FILE" --timeout 15 2>&1 | tee -a gowitness_console_${{ matrix.group }}.log | grep -viE "error|fail|timeout|canceled|deadline|refused|blocked|killed|panic|sigsegv|warn" || true
+          # 💡 --delay 3 옵션을 추가하여 웹 폰트 로딩 대기
+          timeout 10m gowitness scan file -f "$TARGET_FILE" --timeout 15 --delay 3 2>&1 | tee -a gowitness_console_${{ matrix.group }}.log | grep -viE "error|fail|timeout|canceled|deadline|refused|blocked|killed|panic|sigsegv|warn" || true
           
           sqlite3 gowitness.sqlite3 "SELECT url FROM urls WHERE screenshot_path IS NOT NULL;" > success_urls.txt 2>/dev/null || touch success_urls.txt
           
@@ -289,9 +290,10 @@ jobs:
             echo "⚠️ 크래시 발생! 누락된 $MISSING_COUNT 개 타겟에 대해 [2단계] 정밀 단발 사격 개시..."
             echo "========================================================="
             
+            # 💡 단발 사격에도 동일하게 --delay 3 옵션 추가
             cat missing_urls.txt | xargs -n 1 -P 3 -I {} sh -c '
               echo "🎯 정밀 단발 캡처 중: {}"
-              timeout 25s gowitness scan single -u "{}" --timeout 15 >> gowitness_fallback_${{ matrix.group }}.log 2>&1 || true
+              timeout 25s gowitness scan single -u "{}" --timeout 15 --delay 3 >> gowitness_fallback_${{ matrix.group }}.log 2>&1 || true
             '
             cat gowitness_fallback_${{ matrix.group }}.log >> gowitness_console_${{ matrix.group }}.log 2>/dev/null || true
           else
