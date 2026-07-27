@@ -1,4 +1,4 @@
-name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
+Name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 
 on:
   workflow_dispatch:
@@ -214,14 +214,23 @@ jobs:
           mv clean_live.txt live_urls.txt
           
           if [ -s live_urls.txt ]; then
-            # 1. 스레드를 2개로 줄이고, debug 대신 일반 콘솔 출력만 파일로 직접(>) 우회하여 메모리 폭주 방지 (tee 사용 안함)
-            gowitness scan file -f live_urls.txt --driver gorod --threads 2 --timeout 15 > gowitness_console_${{ matrix.group }}.log 2>&1 || true
+            URL_COUNT=$(wc -l < live_urls.txt)
+            echo "========================================================="
+            echo "📸 총 $URL_COUNT 개의 URL 스크린샷 개별 격리 촬영(Single-Shot) 시작"
+            echo "========================================================="
             
-            # 2. 에러/실패 관련 로그만 필터링
-            grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked" gowitness_console_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
+            # 💡 [핵심] file 모드 대신 single 모드를 사용하여 하나씩 촬영 (격리)
+            # 특정 URL에서 패닉(SIGSEGV)이 발생해 gowitness가 죽더라도 다음 URL로 계속 진행됨
+            while read -r target_url; do
+              # 25초가 넘어가면 OS가 강제 킬(timeout 25s), 내부 렌더링 타임아웃은 15초
+              timeout 25s gowitness scan single -u "$target_url" --timeout 15 >> gowitness_console_${{ matrix.group }}.log 2>&1 || true
+            done < live_urls.txt
+            
+            # 2. 에러/실패 관련 로그만 필터링 (SIGSEGV 패닉 로그도 텍스트에 남도록 panic 키워드 추가)
+            grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked|killed|panic|SIGSEGV" gowitness_console_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
             
             # 3. SQLite DB에서 구체적인 실패 사유 추출
-            sqlite3 gowitness.sqlite3 -header -csv "SELECT url, response_code, response_reason, title FROM urls WHERE screenshot_path IS NULL OR response_reason != '';" > gowitness_failures_${{ matrix.group }}.csv || true
+            sqlite3 gowitness.sqlite3 -header -csv "SELECT url, response_code, response_reason, title FROM urls WHERE screenshot_path IS NULL OR response_reason != '';" > gowitness_failures_${{ matrix.group }}.csv 2>/dev/null || true
             
             # 4. 다음 Job으로 전달하기 위해 파일들을 strike_out 폴더로 적재
             if [ -d "screenshots" ]; then
