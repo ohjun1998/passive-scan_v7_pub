@@ -219,12 +219,15 @@ jobs:
             echo "📸 총 $URL_COUNT 개의 URL 스크린샷 개별 격리 촬영(Single-Shot) 시작"
             echo "========================================================="
             
-            # 💡 [핵심] file 모드 대신 single 모드를 사용하여 하나씩 촬영 (격리)
-            # 특정 URL에서 패닉(SIGSEGV)이 발생해 gowitness가 죽더라도 다음 URL로 계속 진행됨
-            while read -r target_url; do
-              # 25초가 넘어가면 OS가 강제 킬(timeout 25s), 내부 렌더링 타임아웃은 15초
-              timeout 25s gowitness scan single -u "$target_url" --timeout 15 >> gowitness_console_${{ matrix.group }}.log 2>&1 || true
-            done < live_urls.txt
+            # 💡 xargs를 이용한 멀티 프로세스(3-Threads) 병렬 단발 사격 모드 가동
+            echo "⚡ xargs를 이용한 멀티 프로세스(3-Threads) 병렬 단발 사격 모드 가동"
+            cat live_urls.txt | xargs -n 1 -P 3 -I {} sh -c '
+              echo "🎯 캡쳐 시도 중: {}"
+              timeout 25s gowitness scan single -u "{}" --timeout 15 >> gowitness_console_${{ matrix.group }}.log 2>&1 || true
+            '
+            
+            echo "========================================================="
+            echo "🏁 스크린샷 촬영 루프 종료. 결과 집계 중..."
             
             # 2. 에러/실패 관련 로그만 필터링 (SIGSEGV 패닉 로그도 텍스트에 남도록 panic 키워드 추가)
             grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked|killed|panic|SIGSEGV" gowitness_console_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
@@ -232,11 +235,15 @@ jobs:
             # 3. SQLite DB에서 구체적인 실패 사유 추출
             sqlite3 gowitness.sqlite3 -header -csv "SELECT url, response_code, response_reason, title FROM urls WHERE screenshot_path IS NULL OR response_reason != '';" > gowitness_failures_${{ matrix.group }}.csv 2>/dev/null || true
             
-            # 4. 다음 Job으로 전달하기 위해 파일들을 strike_out 폴더로 적재
+            # 4. 💡 캡처된 실제 파일 개수 확인 및 적재 (성공 로그 출력)
             if [ -d "screenshots" ]; then
+              SUCCESS_COUNT=$(ls -1 screenshots/ 2>/dev/null | wc -l)
+              echo "✅ 최종 완료: 총 ${SUCCESS_COUNT}장의 스크린샷이 성공적으로 디스크에 저장되었습니다!"
               mv screenshots strike_out/
-              echo "[+] 스크린샷 촬영 및 적재 완료!"
+            else
+              echo "❌ 경고: 생성된 스크린샷 파일이 단 한 장도 없습니다."
             fi
+            
             mv gowitness_console_${{ matrix.group }}.log strike_out/ 2>/dev/null || true
             mv screenshot_errors_${{ matrix.group }}.txt strike_out/ 2>/dev/null || true
             mv gowitness_failures_${{ matrix.group }}.csv strike_out/ 2>/dev/null || true
