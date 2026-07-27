@@ -1,4 +1,4 @@
-name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
+Name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 
 on:
   workflow_dispatch:
@@ -214,11 +214,11 @@ jobs:
           mv clean_live.txt live_urls.txt
           
           if [ -s live_urls.txt ]; then
-            # 1. 디버그 모드로 촬영 실행 및 전체 로그 기록
-            gowitness scan file -f live_urls.txt --driver gorod --threads 4 --timeout 10 --debug 2>&1 | tee gowitness_debug_${{ matrix.group }}.log || true
+            # 1. 스레드를 2개로 줄이고, debug 대신 일반 콘솔 출력만 파일로 직접(>) 우회하여 메모리 폭주 방지 (tee 사용 안함)
+            gowitness scan file -f live_urls.txt --driver gorod --threads 2 --timeout 15 > gowitness_console_${{ matrix.group }}.log 2>&1 || true
             
             # 2. 에러/실패 관련 로그만 필터링
-            grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked" gowitness_debug_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
+            grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked" gowitness_console_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
             
             # 3. SQLite DB에서 구체적인 실패 사유 추출
             sqlite3 gowitness.sqlite3 -header -csv "SELECT url, response_code, response_reason, title FROM urls WHERE screenshot_path IS NULL OR response_reason != '';" > gowitness_failures_${{ matrix.group }}.csv || true
@@ -228,7 +228,7 @@ jobs:
               mv screenshots strike_out/
               echo "[+] 스크린샷 촬영 및 적재 완료!"
             fi
-            mv gowitness_debug_${{ matrix.group }}.log strike_out/ 2>/dev/null || true
+            mv gowitness_console_${{ matrix.group }}.log strike_out/ 2>/dev/null || true
             mv screenshot_errors_${{ matrix.group }}.txt strike_out/ 2>/dev/null || true
             mv gowitness_failures_${{ matrix.group }}.csv strike_out/ 2>/dev/null || true
           fi
@@ -461,7 +461,7 @@ jobs:
       run: |
         # 각 노드에서 분산되어 올라온 에러 로그 파일들을 한 폴더로 모음
         mkdir -p reports/logs
-        cp results/gowitness_debug_*.log reports/logs/ 2>/dev/null || true
+        cp results/gowitness_console_*.log reports/logs/ 2>/dev/null || true
         cp results/screenshot_errors_*.txt reports/logs/ 2>/dev/null || true
         cp results/gowitness_failures_*.csv reports/logs/ 2>/dev/null || true
         
