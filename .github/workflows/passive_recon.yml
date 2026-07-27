@@ -246,7 +246,6 @@ jobs:
       run: |
         go install github.com/sensepost/gowitness@latest
         
-        # 💡 한글 폰트 설치 및 한국어 로케일(Locale) 팩 설치 후 설정 적용
         sudo apt-get update
         sudo apt-get install -y sqlite3 fonts-nanum fonts-noto-cjk language-pack-ko locales
         sudo locale-gen ko_KR.UTF-8
@@ -262,7 +261,6 @@ jobs:
         path: temp_chunks
 
     - name: 하이브리드 스크린샷 쾌속 촬영 가동 (깔끔한 콘솔 모드 & 지연 시간 추가)
-      # 💡 브라우저가 실행되는 스텝의 환경 변수(env)에 한국어 세팅 강제 주입
       env:
         LANG: ko_KR.UTF-8
         LANGUAGE: ko_KR:ko
@@ -283,7 +281,6 @@ jobs:
           echo "🚀 [1단계] 고속 일괄 사격(Batch Mode) 개시..."
           echo "========================================================="
           
-          # 💡 --delay 3 옵션을 추가하여 웹 폰트 로딩 대기
           timeout 10m gowitness scan file -f "$TARGET_FILE" --timeout 15 --delay 3 2>&1 | tee -a gowitness_console_${{ matrix.group }}.log | grep -viE "error|fail|timeout|canceled|deadline|refused|blocked|killed|panic|sigsegv|warn" || true
           
           sqlite3 gowitness.sqlite3 "SELECT url FROM urls WHERE screenshot_path IS NOT NULL;" > success_urls.txt 2>/dev/null || touch success_urls.txt
@@ -372,7 +369,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (원본 URL 매칭 & 중복 제거)
+    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (전체화면 이전/다음 줌 기능 추가)
       run: |
         mkdir -p reports/screenshot_report/images
         
@@ -446,6 +443,7 @@ jobs:
                         
                     domain_groups[domain].append((img, display_name, img_url, target_url))
         
+        # 💡 HTML 뼈대 구성 (전체 화면 모달 및 화살표 버튼 CSS 추가)
         html_content = f"""<!DOCTYPE html>
         <html lang="ko">
         <head>
@@ -461,9 +459,26 @@ jobs:
                 .gallery {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 25px; }}
                 .card {{ background: #ffffff; border: 1px solid #dfe4ea; border-radius: 8px; overflow: hidden; }}
                 .card:hover {{ transform: translateY(-5px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); border-color: #3742fa; }}
-                .card img {{ width: 100%; height: 250px; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #f1f2f6; }}
+                
+                .card img {{ width: 100%; height: 250px; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #f1f2f6; cursor: zoom-in; transition: 0.3s; }}
+                .card img:hover {{ opacity: 0.8; }}
+                
                 .card .info {{ padding: 15px; font-size: 13px; word-break: break-all; text-align: center; }}
                 .card .info .main-link {{ color: #1e90ff; text-decoration: none; font-weight: 600; display: block; margin-bottom: 8px; }}
+                
+                /* 💡 전체 화면(모달) 팝업 CSS 및 화살표 스타일 */
+                .modal {{ display: none; position: fixed; z-index: 9999; padding-top: 30px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.95); }}
+                .modal-content {{ margin: auto; display: block; max-width: 90%; max-height: 85vh; object-fit: contain; border-radius: 5px; }}
+                #caption {{ margin: auto; display: block; width: 80%; max-width: 700px; text-align: center; color: #fff; padding: 15px 0; height: 50px; font-size: 18px; font-weight: bold; word-break: break-all; }}
+                
+                .close-btn {{ position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; transition: 0.3s; cursor: pointer; }}
+                .close-btn:hover, .close-btn:focus {{ color: #bbb; text-decoration: none; cursor: pointer; }}
+                
+                /* 💡 이전/다음 화살표 버튼 CSS */
+                .modal-nav {{ cursor: pointer; position: absolute; top: 50%; width: auto; padding: 20px; margin-top: -50px; color: white; font-weight: bold; font-size: 40px; transition: 0.3s; user-select: none; border-radius: 5px; text-decoration: none; }}
+                .modal-nav.prev {{ left: 2%; }}
+                .modal-nav.next {{ right: 2%; }}
+                .modal-nav:hover {{ background-color: rgba(255, 255, 255, 0.2); color: #f1f2f6; }}
             </style>
         </head>
         <body>
@@ -472,13 +487,96 @@ jobs:
                 {f'<p style="color:#ffdd59; font-weight:bold;">🧹 중복 이미지 {removed_count}장 제거됨</p>' if removed_count > 0 else ''}
             </div>"""
         
+        # 💡 각 이미지에 순차적인 index를 부여하여 이전/다음 추적이 가능하도록 변수 할당
+        global_img_idx = 0
+        
         for domain in sorted(domain_groups.keys()):
             html_content += f'<div class="domain-section"><h2 class="domain-title"><span>🌐 {domain}</span><span class="domain-count">총 {len(domain_groups[domain])}개</span></h2><div class="gallery">'
             for img, display_name, img_url, target_url in domain_groups[domain]:
-                html_content += f'<div class="card"><a href="{target_url}" target="_blank"><img src="images/{img_url}" loading="lazy"></a><div class="info"><a href="{target_url}" class="main-link" target="_blank">{display_name}</a></div></div>'
+                # 💡 class="gallery-img", data-caption 속성과 전역 인덱스를 사용하여 모달 연동
+                html_content += f'''
+                <div class="card">
+                    <img class="gallery-img" src="images/{img_url}" data-caption="{display_name}" loading="lazy" onclick="openModal({global_img_idx})" title="클릭하여 확대보기">
+                    <div class="info">
+                        <a href="{target_url}" class="main-link" target="_blank" title="실제 웹사이트 열기">{display_name}</a>
+                    </div>
+                </div>'''
+                global_img_idx += 1
             html_content += "</div></div>"
             
-        html_content += "</body></html>"
+        # 💡 하단에 모달 HTML 구조 및 자바스크립트 슬라이더 로직 추가
+        html_content += '''
+            <!-- 전체 화면 모달(팝업) 영역 -->
+            <div id="imageModal" class="modal">
+                <span class="close-btn" onclick="closeModal()">&times;</span>
+                <a class="modal-nav prev" onclick="changeImage(-1)">&#10094;</a>
+                <a class="modal-nav next" onclick="changeImage(1)">&#10095;</a>
+                <img class="modal-content" id="fullImage">
+                <div id="caption"></div>
+            </div>
+
+            <script>
+                let currentIndex = 0;
+                const images = document.getElementsByClassName('gallery-img');
+
+                // 모달 열기 함수 (클릭된 이미지의 인덱스를 받음)
+                function openModal(index) {
+                    currentIndex = index;
+                    updateModal();
+                    document.getElementById('imageModal').style.display = 'block';
+                }
+
+                // 모달 닫기 함수
+                function closeModal() {
+                    document.getElementById('imageModal').style.display = 'none';
+                }
+                
+                // 이전/다음 버튼 동작 함수
+                function changeImage(step) {
+                    if (images.length === 0) return;
+                    currentIndex += step;
+                    
+                    // 끝에 도달하면 반대편 처음/끝으로 루프
+                    if (currentIndex >= images.length) {
+                        currentIndex = 0;
+                    } else if (currentIndex < 0) {
+                        currentIndex = images.length - 1;
+                    }
+                    updateModal();
+                }
+
+                // 현재 인덱스에 맞춰 모달 창 안의 이미지와 캡션을 교체
+                function updateModal() {
+                    if (images.length === 0) return;
+                    const img = images[currentIndex];
+                    document.getElementById('fullImage').src = img.src;
+                    document.getElementById('caption').innerText = img.getAttribute('data-caption');
+                }
+                
+                // 모달 뒷배경(검은색)을 클릭해도 모달 닫힘
+                document.getElementById('imageModal').addEventListener('click', function(e) {
+                    if (e.target === this) {
+                        closeModal();
+                    }
+                });
+
+                // 키보드 지원: ESC(닫기), 좌우 방향키(이전/다음)
+                document.addEventListener('keydown', function(event) {
+                    if (document.getElementById('imageModal').style.display === 'block') {
+                        if (event.key === "Escape") {
+                            closeModal();
+                        } else if (event.key === "ArrowLeft") {
+                            changeImage(-1);
+                        } else if (event.key === "ArrowRight") {
+                            changeImage(1);
+                        }
+                    }
+                });
+            </script>
+        </body>
+        </html>
+        '''
+        
         with open(html_path, 'w', encoding='utf-8') as f: f.write(html_content)
         EOF
         
