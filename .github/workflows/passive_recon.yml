@@ -369,7 +369,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 📸 통합 스크린샷 HTML 갤러리 조립 (모바일 완벽 호환 Base64 내장형)
+    - name: 📸 세로형 대시보드 및 모바일 Base64 내장형 갤러리 조립
       run: |
         mkdir -p reports/screenshot_report/images
         
@@ -436,7 +436,6 @@ jobs:
                         if not target_url:
                             target_url = f"images/{img_url}"
                             
-                    # 💡 안드로이드 로컬 열기 정책(CORS/파일 접근 차단) 우회를 위해 이미지를 Base64로 강제 내장
                     mime_type, _ = mimetypes.guess_type(filepath)
                     if not mime_type: mime_type = "image/png"
                     
@@ -445,7 +444,7 @@ jobs:
                             b64_data = base64.b64encode(img_f.read()).decode('utf-8')
                         base64_src = f"data:{mime_type};base64,{b64_data}"
                     except Exception:
-                        base64_src = f"images/{img_url}" # 실패 시 기존 방식(fallback)
+                        base64_src = f"images/{img_url}"
                     
                     try:
                         if '---' in display_name: domain = display_name.split('---')[1].split('-')[0]
@@ -454,7 +453,7 @@ jobs:
                         
                     domain_groups[domain].append((img, display_name, base64_src, target_url))
         
-        # 💡 HTML 뼈대 구성 (전체 화면 모달 및 화살표 버튼 CSS)
+        # 💡 HTML 뼈대 구성 (세로형 대시보드 리스트 CSS 포함)
         html_content = f"""<!DOCTYPE html>
         <html lang="ko">
         <head>
@@ -462,34 +461,50 @@ jobs:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>📸 Passive Recon - Screenshot Gallery</title>
             <style>
-                body {{ font-family: 'Segoe UI', sans-serif; background-color: #f3f4f6; padding: 20px; margin: 0; }}
+                body {{ font-family: 'Segoe UI', sans-serif; background-color: #f3f4f6; padding: 20px; margin: 0; scroll-behavior: smooth; }}
                 .header {{ text-align: center; margin-bottom: 40px; background: #2F3542; color: white; padding: 25px; border-radius: 12px; }}
+                
+                /* 💡 상단 세로형 요약 대시보드 CSS */
+                .dashboard {{ display: flex; flex-direction: column; gap: 12px; margin-bottom: 50px; max-width: 800px; margin-left: auto; margin-right: auto; }}
+                .dash-card {{ display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, #3742fa 0%, #5352ed 100%); color: white; padding: 15px 25px; border-radius: 10px; text-decoration: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.3s; }}
+                .dash-card:hover {{ transform: translateY(-3px); box-shadow: 0 8px 15px rgba(0,0,0,0.2); filter: brightness(1.1); }}
+                .dash-card h3 {{ margin: 0; font-size: 18px; word-break: break-all; text-align: left; flex: 1; }}
+                .dash-card span {{ font-size: 18px; font-weight: bold; background: rgba(255,255,255,0.2); padding: 5px 15px; border-radius: 20px; white-space: nowrap; margin-left: 15px; }}
+                
                 .domain-section {{ margin-bottom: 50px; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
-                .domain-title {{ border-bottom: 3px solid #3742fa; padding-bottom: 12px; margin-top: 0; margin-bottom: 25px; color: #2f3542; font-size: 24px; display: flex; justify-content: space-between; }}
-                .domain-count {{ font-size: 16px; color: #747d8c; background: #f1f2f6; padding: 5px 12px; border-radius: 20px; }}
-                .gallery {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 25px; }}
+                .domain-title {{ border-bottom: 3px solid #3742fa; padding-bottom: 12px; margin-top: 0; margin-bottom: 25px; color: #2f3542; font-size: 24px; display: flex; justify-content: space-between; flex-wrap: wrap; }}
+                .domain-count {{ font-size: 16px; color: #747d8c; background: #f1f2f6; padding: 5px 12px; border-radius: 20px; margin-top: 5px; }}
+                .gallery {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }}
                 .card {{ background: #ffffff; border: 1px solid #dfe4ea; border-radius: 8px; overflow: hidden; }}
                 .card:hover {{ transform: translateY(-5px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); border-color: #3742fa; }}
                 
-                .card img {{ width: 100%; height: 250px; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #f1f2f6; cursor: zoom-in; transition: 0.3s; }}
+                .card img {{ width: 100%; height: 200px; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #f1f2f6; cursor: zoom-in; transition: 0.3s; }}
                 .card img:hover {{ opacity: 0.8; }}
                 
                 .card .info {{ padding: 15px; font-size: 13px; word-break: break-all; text-align: center; }}
                 .card .info .main-link {{ color: #1e90ff; text-decoration: none; font-weight: 600; display: block; margin-bottom: 8px; }}
                 
                 /* 전체 화면 모달(팝업) CSS */
-                .modal {{ display: none; position: fixed; z-index: 9999; padding-top: 30px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.95); }}
-                .modal-content {{ margin: auto; display: block; max-width: 90%; max-height: 85vh; object-fit: contain; border-radius: 5px; }}
-                #caption {{ margin: auto; display: block; width: 80%; max-width: 700px; text-align: center; color: #fff; padding: 15px 0; height: 50px; font-size: 18px; font-weight: bold; word-break: break-all; }}
+                .modal {{ display: none; position: fixed; z-index: 9999; padding-top: 50px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.95); }}
+                .modal-content {{ margin: auto; display: block; max-width: 90%; max-height: 80vh; object-fit: contain; border-radius: 5px; }}
+                #caption {{ margin: auto; display: block; width: 80%; max-width: 700px; text-align: center; color: #fff; padding: 15px 0; font-size: 16px; word-break: break-all; }}
                 
-                .close-btn {{ position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; transition: 0.3s; cursor: pointer; }}
+                .close-btn {{ position: absolute; top: 15px; right: 25px; color: #f1f1f1; font-size: 40px; font-weight: bold; transition: 0.3s; cursor: pointer; }}
                 .close-btn:hover, .close-btn:focus {{ color: #bbb; text-decoration: none; cursor: pointer; }}
                 
                 /* 화살표 버튼 CSS */
-                .modal-nav {{ cursor: pointer; position: absolute; top: 50%; width: auto; padding: 20px; margin-top: -50px; color: white; font-weight: bold; font-size: 40px; transition: 0.3s; user-select: none; border-radius: 5px; text-decoration: none; }}
-                .modal-nav.prev {{ left: 2%; }}
-                .modal-nav.next {{ right: 2%; }}
-                .modal-nav:hover {{ background-color: rgba(255, 255, 255, 0.2); color: #f1f2f6; }}
+                .modal-nav {{ cursor: pointer; position: absolute; top: 50%; width: auto; padding: 16px; margin-top: -50px; color: white; font-weight: bold; font-size: 30px; transition: 0.3s; user-select: none; border-radius: 5px; text-decoration: none; background-color: rgba(0,0,0,0.5); }}
+                .modal-nav.prev {{ left: 10px; }}
+                .modal-nav.next {{ right: 10px; }}
+                .modal-nav:hover {{ background-color: rgba(255, 255, 255, 0.3); color: #fff; }}
+                
+                /* 모바일 반응형 조정 */
+                @media (max-width: 600px) {{
+                    .gallery {{ grid-template-columns: 1fr; }}
+                    .modal-nav {{ font-size: 20px; padding: 10px; }}
+                    .dash-card {{ padding: 15px; }}
+                    .dash-card h3, .dash-card span {{ font-size: 15px; }}
+                }}
             </style>
         </head>
         <body>
@@ -497,16 +512,32 @@ jobs:
                 <h1 style="margin:0 0 10px 0;">📸 도메인별 통합 스크린샷 갤러리</h1>
                 {f'<p style="color:#ffdd59; font-weight:bold;">🧹 중복 이미지 {removed_count}장 제거됨</p>' if removed_count > 0 else ''}
             </div>"""
+
+        # 💡 상단 세로형 요약 대시보드 조립 (도메인 박스 클릭 시 앵커 스크롤 이동)
+        html_content += '<div class="dashboard">'
+        for domain in sorted(domain_groups.keys()):
+            domain_id = domain.replace(".", "-")
+            count = len(domain_groups[domain])
+            html_content += f'<a href="#{domain_id}" class="dash-card" title="{domain} 섹션으로 이동"><h3>🌐 {domain}</h3><span>{count}장</span></a>'
+        html_content += '</div>'
         
+        # 💡 Base64 데이터가 길어 HTML 태그에 직행하면 깨지므로, JS 배열에 분리 저장합니다.
+        js_image_data = []
+        js_caption_data = []
         global_img_idx = 0
         
         for domain in sorted(domain_groups.keys()):
-            html_content += f'<div class="domain-section"><h2 class="domain-title"><span>🌐 {domain}</span><span class="domain-count">총 {len(domain_groups[domain])}개</span></h2><div class="gallery">'
+            domain_id = domain.replace(".", "-")
+            html_content += f'<div id="{domain_id}" class="domain-section"><h2 class="domain-title"><span>🌐 {domain}</span><span class="domain-count">총 {len(domain_groups[domain])}개</span></h2><div class="gallery">'
             for img, display_name, base64_src, target_url in domain_groups[domain]:
-                # 💡 img src에 내장된 Base64 데이터를 직접 할당
+                
+                # JS 배열에 데이터 푸시
+                js_image_data.append(base64_src)
+                js_caption_data.append(display_name)
+                
                 html_content += f'''
                 <div class="card">
-                    <img class="gallery-img" src="{base64_src}" data-caption="{display_name}" loading="lazy" onclick="openModal({global_img_idx})" title="클릭하여 확대보기">
+                    <img src="{base64_src}" loading="lazy" onclick="openModal({global_img_idx})" title="클릭하여 확대보기">
                     <div class="info">
                         <a href="{target_url}" class="main-link" target="_blank" title="실제 웹사이트 열기">{display_name}</a>
                     </div>
@@ -514,7 +545,7 @@ jobs:
                 global_img_idx += 1
             html_content += "</div></div>"
             
-        # 💡 하단에 모달 HTML 구조 및 자바스크립트 슬라이더 로직
+        # 💡 하단 모달 및 JavaScript 엔진 조립
         html_content += '''
             <!-- 전체 화면 모달(팝업) 영역 -->
             <div id="imageModal" class="modal">
@@ -526,10 +557,15 @@ jobs:
             </div>
 
             <script>
+                // 💡 Python에서 생성된 Base64 이미지 배열과 캡션 배열을 전달받습니다.
+                const imageData = ''' + json.dumps(js_image_data) + ''';
+                const captionData = ''' + json.dumps(js_caption_data) + ''';
+                
                 let currentIndex = 0;
-                const images = document.getElementsByClassName('gallery-img');
+                const totalImages = imageData.length;
 
                 function openModal(index) {
+                    if (totalImages === 0) return;
                     currentIndex = index;
                     updateModal();
                     document.getElementById('imageModal').style.display = 'block';
@@ -537,33 +573,34 @@ jobs:
 
                 function closeModal() {
                     document.getElementById('imageModal').style.display = 'none';
+                    document.getElementById('fullImage').src = ""; // 메모리 확보
                 }
                 
                 function changeImage(step) {
-                    if (images.length === 0) return;
+                    if (totalImages === 0) return;
                     currentIndex += step;
                     
-                    if (currentIndex >= images.length) {
+                    if (currentIndex >= totalImages) {
                         currentIndex = 0;
                     } else if (currentIndex < 0) {
-                        currentIndex = images.length - 1;
+                        currentIndex = totalImages - 1;
                     }
                     updateModal();
                 }
 
                 function updateModal() {
-                    if (images.length === 0) return;
-                    const img = images[currentIndex];
-                    document.getElementById('fullImage').src = img.src;
-                    document.getElementById('caption').innerText = img.getAttribute('data-caption');
+                    document.getElementById('fullImage').src = imageData[currentIndex];
+                    document.getElementById('caption').innerText = captionData[currentIndex];
                 }
                 
+                // 배경 클릭 시 닫기
                 document.getElementById('imageModal').addEventListener('click', function(e) {
                     if (e.target === this) {
                         closeModal();
                     }
                 });
 
+                // 키보드 네비게이션
                 document.addEventListener('keydown', function(event) {
                     if (document.getElementById('imageModal').style.display === 'block') {
                         if (event.key === "Escape") {
