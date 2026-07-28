@@ -13,25 +13,58 @@ mkdir -p results
 touch global_js_db.txt
 
 echo "==================================================================="
-echo "🚀 [Node-$GROUP] 정찰 파이프라인 가동 (Waybackurls + GAU + Katana 병렬화)"
+echo "🚀 [Node-$GROUP] 정찰 파이프라인 가동 (선택적 Subfinder + Waybackurls + GAU + Katana)"
 echo "==================================================================="
 
 for DOMAIN in $(cat $TARGETS_FILE); do
-  # 와일드카드 필터링 (*.target.com -> target.com)
-  SAFE_DOMAIN=$(echo $DOMAIN | sed 's/\*\.//g')
   
+  # ---------------------------------------------------------
+  # 💡 0. 와일드카드(*.) 존재 여부 확인 및 분기 처리
+  # ---------------------------------------------------------
+  if [[ "$DOMAIN" == \*\.* ]]; then
+    IS_WILDCARD=true
+    # 앞의 '*. ' 제거 후 순수 도메인만 추출 (예: *.kakao.com -> kakao.com)
+    SAFE_DOMAIN=$(echo "$DOMAIN" | sed 's/^\*\.//')
+  else
+    IS_WILDCARD=false
+    SAFE_DOMAIN="$DOMAIN"
+  fi
+
   echo ""
   echo "=================================================="
-  echo "🎯 [Target: $SAFE_DOMAIN] 데이터 수집 시작 (병렬 처리)"
+  if [ "$IS_WILDCARD" = true ]; then
+    echo "🎯 [Target: $SAFE_DOMAIN] (와일드카드 ⭕) 서브도메인 확장 후 스캔 시작"
+  else
+    echo "🎯 [Target: $SAFE_DOMAIN] (단일 도메인 ❌) 지정된 도메인만 집중 스캔 시작"
+  fi
   echo "=================================================="
 
   # ---------------------------------------------------------
-  # 1. Waybackurls (과거 아카이브 추출) - 백그라운드 실행
+  # 1. Subfinder (서브도메인 탐색 엔진) - 와일드카드일 때만 실행!
+  # ---------------------------------------------------------
+  if [ "$IS_WILDCARD" = true ]; then
+    echo "  [+] 🌐 [Subfinder] 와일드카드 타겟 감지! 서브도메인 딥 스캔 가동 중..."
+    subfinder -d $SAFE_DOMAIN -all -silent > results/${SAFE_DOMAIN}_subdomains.txt 2>/dev/null
+    
+    # 탐지된 서브도메인 + 원래의 메인 도메인을 하나로 합침
+    echo $SAFE_DOMAIN >> results/${SAFE_DOMAIN}_subdomains.txt
+    sort -u results/${SAFE_DOMAIN}_subdomains.txt > results/${SAFE_DOMAIN}_all_targets.txt
+    
+    SUB_COUNT=$(wc -l < results/${SAFE_DOMAIN}_all_targets.txt)
+    echo "  [+] ✅ [Subfinder] 타겟 확장 완료: 총 ${SUB_COUNT}개의 서브/루트 도메인 묶음 확보!"
+  else
+    # 와일드카드가 아닐 경우, 단일 도메인 1개만 타겟 리스트에 넣음
+    echo "  [+] 📌 단일 도메인 타겟 감지! 서브도메인 탐색을 건너뜁니다."
+    echo $SAFE_DOMAIN > results/${SAFE_DOMAIN}_all_targets.txt
+  fi
+
+  # ---------------------------------------------------------
+  # 2. Waybackurls (과거 아카이브 URL 병렬 추출)
   # ---------------------------------------------------------
   (
-    echo "  [+] 🏛️ [Waybackurls] 과거 아카이브 URL 추출 중..."
-    echo $DOMAIN | waybackurls > results/${SAFE_DOMAIN}_waybackurls_raw.txt
-    
+    echo "  [+] 🏛️ [Waybackurls] 과거 아카이브 URL 병렬 추출 중..."
+    cat results/${SAFE_DOMAIN}_all_targets.txt | waybackurls > results/${SAFE_DOMAIN}_waybackurls_raw.txt 2>/dev/null
+
     if [ -s "results/${SAFE_DOMAIN}_waybackurls_raw.txt" ]; then
       cat results/${SAFE_DOMAIN}_waybackurls_raw.txt | uro > results/${SAFE_DOMAIN}_waybackurls.txt
       WAYBACK_COUNT=$(wc -l < results/${SAFE_DOMAIN}_waybackurls.txt)
@@ -44,12 +77,12 @@ for DOMAIN in $(cat $TARGETS_FILE); do
   ) &
 
   # ---------------------------------------------------------
-  # 2. GAU (GetAllUrls - 위협 인텔리전스 소스) - 백그라운드 실행
+  # 3. GAU (외부 위협 인텔리전스 기반)
   # ---------------------------------------------------------
   (
     echo "  [+] 🌐 [GAU] 외부 위협 인텔리전스 URL 수집 중..."
-    gau --threads 5 --retries 2 $DOMAIN > results/${SAFE_DOMAIN}_gau_raw.txt
-    
+    cat results/${SAFE_DOMAIN}_all_targets.txt | gau --threads 5 > results/${SAFE_DOMAIN}_gau_raw.txt 2>/dev/null
+
     if [ -s "results/${SAFE_DOMAIN}_gau_raw.txt" ]; then
       cat results/${SAFE_DOMAIN}_gau_raw.txt | uro > results/${SAFE_DOMAIN}_gau.txt
       GAU_COUNT=$(wc -l < results/${SAFE_DOMAIN}_gau.txt)
@@ -62,12 +95,12 @@ for DOMAIN in $(cat $TARGETS_FILE); do
   ) &
 
   # ---------------------------------------------------------
-  # 3. Katana (스텔스 크롤링 - 서버 부하 방지) - 백그라운드 실행
+  # 4. Katana (스텔스 크롤링 - 확장된 타겟 리스트 활용)
   # ---------------------------------------------------------
   (
-    echo "  [+] 🕷️ [Katana] 스텔스(안전) 모드 크롤링 가동..."
-    katana -u https://$SAFE_DOMAIN -d 2 -c 5 -rl 50 -jc -silent > results/${SAFE_DOMAIN}_katana_raw.txt
-    
+    echo "  [+] 🕷️ [Katana] 타겟 리스트 대상 스텔스 크롤링 가동..."
+    katana -list results/${SAFE_DOMAIN}_all_targets.txt -d 2 -c 5 -rl 50 -jc -silent > results/${SAFE_DOMAIN}_katana_raw.txt 2>/dev/null
+
     if [ -s "results/${SAFE_DOMAIN}_katana_raw.txt" ]; then
       cat results/${SAFE_DOMAIN}_katana_raw.txt | uro > results/${SAFE_DOMAIN}_katana.txt
       KATANA_COUNT=$(wc -l < results/${SAFE_DOMAIN}_katana.txt)
@@ -86,38 +119,35 @@ for DOMAIN in $(cat $TARGETS_FILE); do
   echo "  [*] ✅ 해당 도메인의 스캔(Waybackurls, GAU, Katana)이 병렬로 완료되었습니다!"
 
   # ---------------------------------------------------------
-  # 4. JS 파일 추출 및 스마트 다운로드 (방어 로직)
+  # 5. JS 파일 추출 및 스마트 다운로드 (방어 로직)
   # ---------------------------------------------------------
   echo "  [+] ⚙️ 수집된 전체 데이터에서 JavaScript(JS) 타겟 추출 중..."
   cat results/${SAFE_DOMAIN}_*.txt | grep -iE '\.js($|\?)' | awk -F '?' '{print $1}' | sort -u > results/${SAFE_DOMAIN}_js_targets.txt
   JS_TOTAL=$(wc -l < results/${SAFE_DOMAIN}_js_targets.txt)
-  
+
   if [ "$JS_TOTAL" -gt 0 ]; then
     echo "  [+] 💡 총 ${JS_TOTAL}개의 자바스크립트(JS) 소스 경로를 식별했습니다."
-    
+
     # 이전에 분석한 JS 파일 제외 (스마트 필터링)
     grep -v -F -f global_js_db.txt results/${SAFE_DOMAIN}_js_targets.txt > results/${SAFE_DOMAIN}_js_new.txt 2>/dev/null || cat results/${SAFE_DOMAIN}_js_targets.txt > results/${SAFE_DOMAIN}_js_new.txt
     JS_NEW=$(wc -l < results/${SAFE_DOMAIN}_js_new.txt)
-    
+
     echo "  [!] 🛡️ [중복 방지] 과거에 분석 완료된 파일 제외: ${JS_NEW}개의 신규 JS만 남았습니다."
-    
+
     if [ "$JS_NEW" -gt 0 ]; then
-      # 서버 부하 방지 및 액션스 런타임 보호를 위한 1000개 컷팅
       head -n 1000 results/${SAFE_DOMAIN}_js_new.txt > results/${SAFE_DOMAIN}_js_final.txt
       JS_FINAL=$(wc -l < results/${SAFE_DOMAIN}_js_final.txt)
-      
+
       echo "  [!] 🛡️ [용량 보호] 디스크 과부하 및 타임아웃 방지를 위해 최대 ${JS_FINAL}개까지만 다운로드를 진행합니다."
       echo "  [+] 📥 JS 다운로드 병렬(10 Thread) 가동 중..."
-      
+
       mkdir -p results/${SAFE_DOMAIN}_js_files
-      # xargs 경고 수정: -n 1 제거 및 curl 옵션 안정화
       cat results/${SAFE_DOMAIN}_js_final.txt | xargs -I {} -P 10 sh -c '
         url="{}"
         filename=$(basename "$url")
-        # 404/403 무시, 3초 타임아웃
         curl -s -f -m 3 --create-dirs -o "results/'${SAFE_DOMAIN}'_js_files/$filename" "$url" && echo "$url" >> global_js_db.txt
       '
-      
+
       DOWNLOADED=$(ls -1q results/${SAFE_DOMAIN}_js_files 2>/dev/null | wc -l)
       echo "  [+] ✅ 다운로드 성공: 총 ${DOWNLOADED} 개 확보 (404/403 에러 제외됨)"
     else
@@ -126,7 +156,7 @@ for DOMAIN in $(cat $TARGETS_FILE); do
   else
     echo "  [-] 💡 식별된 JS 소스 경로가 없습니다."
   fi
-  
+
 done
 
 echo "==================================================================="
