@@ -130,7 +130,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 3] Httpx 생존 검사 전담대 (20대 분산) - 캡처 없이 200 OK 여부만 확인
+  # [Job 3] Httpx 생존 검사 전담대 (20대 분산)
   # ==========================================
   httpx-live-probe:
     runs-on: ubuntu-latest
@@ -168,7 +168,6 @@ jobs:
           echo "🤖 [Httpx Check] 생존 유무 전수 검사 (${{ matrix.group }}) - 총 ${TOTAL}개"
           httpx -l chunks/chunk_${{ matrix.group }}.txt -sc -td -server -random-agent -rl 10 -t 5 -timeout 5 -retries 1 -json -silent > strike_out/httpx_results_${{ matrix.group }}.json
           
-          # 200 응답만 골라내서 텍스트 파일로 저장
           jq -r 'select(.status_code == 200) | .url' strike_out/httpx_results_${{ matrix.group }}.json | sort -u > temp_live.txt
           grep -iEv "%3c|%3e|<|>|%22|\"|%20| |\*|%2a|%27|'" temp_live.txt > strike_out/clean_live_${{ matrix.group }}.txt || true
         else
@@ -189,7 +188,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 4] 💡 글로벌 생존자 믹서기 2차 (단 1대) - 작업량 완벽 균등 분배 💡
+  # [Job 4] 글로벌 생존자 믹서기 2차 - 작업량 완벽 균등 분배
   # ==========================================
   live-url-mixer:
     runs-on: ubuntu-latest
@@ -209,15 +208,12 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C httpx_raw/
         done
         
-        # 20개 노드에서 살아남은 URL들을 한 곳에 모아 완벽히 섞음
         cat httpx_raw/clean_live_*.txt 2>/dev/null | sort -u | shuf > global_live_urls.txt
-        
         TOTAL_LIVE=$(wc -l < global_live_urls.txt)
         echo "====================================================="
         echo "✅ 최종 수집된 완벽한 200 OK 타겟: 총 ${TOTAL_LIVE} 개"
         echo "====================================================="
         
-        # 다시 정확히 20등분 (split 명령어로 00~19 파일 생성)
         mkdir -p balanced_chunks
         split -n l/20 -d -a 2 global_live_urls.txt balanced_chunks/live_chunk_
 
@@ -232,7 +228,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 5] 스크린샷 캡처 하이브리드 부대 (인코딩 깨짐 해결)
+  # [Job 5] 스크린샷 캡처 하이브리드 부대
   # ==========================================
   screenshot-strike:
     runs-on: ubuntu-latest
@@ -242,16 +238,14 @@ jobs:
         group: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
       fail-fast: false
     steps:
-    - name: Gowitness 및 필수 패키지 설치 (한글 폰트 및 한국어 Locale 추가)
+    - name: Gowitness 및 필수 패키지 설치
       run: |
         go install github.com/sensepost/gowitness@latest
-        
         sudo apt-get update
         sudo apt-get install -y sqlite3 fonts-nanum fonts-noto-cjk language-pack-ko locales
         sudo locale-gen ko_KR.UTF-8
         sudo update-locale LANG=ko_KR.UTF-8 LC_ALL=ko_KR.UTF-8
         sudo fc-cache -fv
-        
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
     - name: 균등 분배된 생존 타겟 다운로드
@@ -260,7 +254,7 @@ jobs:
         name: balanced-live-chunks
         path: temp_chunks
 
-    - name: 하이브리드 스크린샷 쾌속 촬영 가동 (깔끔한 콘솔 모드 & 지연 시간 추가)
+    - name: 하이브리드 스크린샷 촬영
       env:
         LANG: ko_KR.UTF-8
         LANGUAGE: ko_KR:ko
@@ -277,38 +271,27 @@ jobs:
         if [ -s "$TARGET_FILE" ]; then
           URL_COUNT=$(wc -l < "$TARGET_FILE")
           echo "========================================================="
-          echo "⚖️ 나에게 할당된 캡처 대상 총 $URL_COUNT 개"
           echo "🚀 [1단계] 고속 일괄 사격(Batch Mode) 개시..."
-          echo "========================================================="
           
           timeout 10m gowitness scan file -f "$TARGET_FILE" --timeout 15 --delay 3 2>&1 | tee -a gowitness_console_${{ matrix.group }}.log | grep -viE "error|fail|timeout|canceled|deadline|refused|blocked|killed|panic|sigsegv|warn" || true
           
           sqlite3 gowitness.sqlite3 "SELECT url FROM urls WHERE screenshot_path IS NOT NULL;" > success_urls.txt 2>/dev/null || touch success_urls.txt
           
           awk 'NR==FNR{a[$0];next} !($0 in a)' success_urls.txt "$TARGET_FILE" > missing_urls.txt
-          
           MISSING_COUNT=$(wc -l < missing_urls.txt)
           
           if [ "$MISSING_COUNT" -gt 0 ]; then
-            echo "========================================================="
-            echo "⚠️ 크래시 발생! 누락된 $MISSING_COUNT 개 타겟에 대해 [2단계] 정밀 단발 사격 개시..."
-            echo "========================================================="
-            
+            echo "⚠️ 누락된 $MISSING_COUNT 개 타겟에 대해 [2단계] 정밀 단발 사격 개시..."
             cat missing_urls.txt | xargs -n 1 -P 3 -I {} sh -c '
-              echo "🎯 정밀 단발 캡처 중: {}"
               timeout 25s gowitness scan single -u "{}" --timeout 15 --delay 3 >> gowitness_fallback_${{ matrix.group }}.log 2>&1 || true
             '
             cat gowitness_fallback_${{ matrix.group }}.log >> gowitness_console_${{ matrix.group }}.log 2>/dev/null || true
-          else
-            echo "🎉 [1단계] 고속 일괄 사격만으로 모든 타겟 캡처가 완벽히 끝났습니다!"
           fi
           
           grep -iE "error|failed|timeout|canceled|context deadline|refused|blocked|killed|panic|SIGSEGV" gowitness_console_${{ matrix.group }}.log > screenshot_errors_${{ matrix.group }}.txt || true
           sqlite3 gowitness.sqlite3 -header -csv "SELECT url, response_code, response_reason, title FROM urls WHERE screenshot_path IS NULL OR response_reason != '';" > gowitness_failures_${{ matrix.group }}.csv 2>/dev/null || true
           
           if [ -d "screenshots" ]; then
-            SUCCESS_COUNT=$(ls -1 screenshots/ 2>/dev/null | wc -l)
-            echo "✅ 최종 촬영 완료: ${SUCCESS_COUNT} 장 적재 성공!"
             mv screenshots strike_out/
           fi
           
@@ -316,8 +299,6 @@ jobs:
           mv screenshot_errors_${{ matrix.group }}.txt strike_out/ 2>/dev/null || true
           mv gowitness_failures_${{ matrix.group }}.csv strike_out/ 2>/dev/null || true
           mv missing_urls.txt strike_out/missing_urls_${{ matrix.group }}.txt 2>/dev/null || true
-        else
-          echo "할당된 생존 타겟이 없습니다."
         fi
 
     - name: 캡처 결과 암호화 및 업로드
@@ -331,7 +312,7 @@ jobs:
         retention-days: 1
 
   # ==========================================
-  # [Job 6] 생존 분석 기반 컬러 대시보드 및 통합 갤러리 사출
+  # [Job 6] 생존 분석 기반 컬러 대시보드 및 통합 갤러리 사출 (수정 완료)
   # ==========================================
   excel-reporter:
     runs-on: ubuntu-latest
@@ -353,11 +334,11 @@ jobs:
     - name: 1. 파편 데이터(Job 1) 다운로드
       uses: actions/download-artifact@v4
       with: { pattern: node-results-*, path: encrypted_storage, merge-multiple: true }
-      
+
     - name: 2. Httpx 로그(Job 3) 다운로드 (갤러리 매핑용)
       uses: actions/download-artifact@v4
       with: { pattern: httpx-results-*, path: encrypted_storage, merge-multiple: true }
-      
+
     - name: 3. 스크린샷 데이터(Job 5) 다운로드
       uses: actions/download-artifact@v4
       with: { pattern: strike-results-*, path: encrypted_storage, merge-multiple: true }
@@ -369,7 +350,7 @@ jobs:
           gpg --decrypt --batch --passphrase "${{ secrets.ACTIONS_CRYPTO_PASSWORD }}" "$f" 2>/dev/null | tar -xzf - -C results/
         done
 
-    - name: 📸 세로형 대시보드 및 모바일 Base64 내장형 갤러리 조립
+    - name: 📸 세로형 대시보드 및 모바일 Base64 내장형 갤러리 조립 (URL 복원 버그 수정)
       run: |
         mkdir -p reports/screenshot_report/images
         
@@ -378,13 +359,21 @@ jobs:
         fi
         
         cat << 'EOF' > generate_gallery.py
-        import os, urllib.parse, hashlib, json, glob, base64, mimetypes
+        import os, urllib.parse, hashlib, json, glob, base64, mimetypes, re
         from collections import defaultdict
         
         img_dir = 'reports/screenshot_report/images'
         html_path = 'reports/screenshot_report/index.html'
         
         url_mapping = {}
+        
+        def add_to_mapping(url):
+            if not url: return
+            url_stripped = url.rstrip("/")
+            safe_name = url_stripped.replace("://", "---").replace(":", "-").replace("/", "-").replace("?", "-").replace("=", "-").replace("&", "-")
+            url_mapping[safe_name] = url
+
+        # 1. Httpx 결과에서 URL 추출
         for json_file in glob.glob('results/httpx_results_*.json'):
             try:
                 with open(json_file, 'r', encoding='utf-8') as f:
@@ -393,12 +382,19 @@ jobs:
                         try:
                             data = json.loads(line)
                             if data.get('status_code') == 200:
-                                original_url = data.get('url', '')
-                                if original_url:
-                                    url_stripped = original_url.rstrip("/")
-                                    safe_name = url_stripped.replace("://", "---").replace(":", "-").replace("/", "-").replace("?", "-").replace("=", "-").replace("&", "-")
-                                    url_mapping[safe_name] = original_url
+                                add_to_mapping(data.get('url', ''))
                         except Exception: pass
+            except Exception: pass
+
+        # 2. 💡 새로 추가된 로직: 리다이렉트된 최종 URL을 Gowitness 로그에서 직접 긁어와서 사전(mapping) 보강
+        for log_file in glob.glob('results/gowitness_console_*.log'):
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # url="https://home.imeritz.com:443/softcamp/secukey.js" 패턴 추출
+                    urls = re.findall(r'url="?(https?://[^"\s]+)"?', content)
+                    for u in urls:
+                        add_to_mapping(u)
             except Exception: pass
                 
         domain_groups = defaultdict(list)
@@ -427,12 +423,27 @@ jobs:
                     display_name = img.rsplit('.', 1)[0]
                     img_url = urllib.parse.quote(img)
                     
+                    # 여기서 대부분의 URL은 Httpx나 Gowitness 로그 매핑으로 100% 완벽하게 찾아냅니다.
                     target_url = url_mapping.get(display_name)
+                    
+                    # 3. 💡 만약 매핑에 실패하더라도 콜론(:)이 슬래시(/)로 망가지지 않도록 정규식(Regex)을 통한 스마트 복원 추가
                     if not target_url:
                         if "---" in display_name:
                             scheme_rest = display_name.split("---", 1)
                             if len(scheme_rest) == 2:
-                                target_url = f"{scheme_rest[0]}://" + scheme_rest[1].replace("-", "/")
+                                rest = scheme_rest[1]
+                                # 패턴: 도메인 - 포트(옵션) - 경로 
+                                match = re.match(r'^([a-zA-Z0-9.-]+?)(?:-(\d{2,5}))?-(.*)$', rest)
+                                if match and ('.' in match.group(1)):
+                                    domain = match.group(1)
+                                    port = match.group(2)
+                                    path = match.group(3).replace("-", "/")
+                                    if port:
+                                        target_url = f"{scheme_rest[0]}://{domain}:{port}/{path}"
+                                    else:
+                                        target_url = f"{scheme_rest[0]}://{domain}/{path}"
+                                else:
+                                    target_url = f"{scheme_rest[0]}://" + rest.replace("-", "/")
                         if not target_url:
                             target_url = f"images/{img_url}"
                             
@@ -453,7 +464,7 @@ jobs:
                         
                     domain_groups[domain].append((img, display_name, base64_src, target_url))
         
-        # 💡 HTML 뼈대 구성 (세로형 대시보드 리스트 CSS 포함)
+        # HTML 뼈대 구성 (세로형 대시보드 리스트 CSS 포함)
         html_content = f"""<!DOCTYPE html>
         <html lang="ko">
         <head>
@@ -464,7 +475,6 @@ jobs:
                 body {{ font-family: 'Segoe UI', sans-serif; background-color: #f3f4f6; padding: 20px; margin: 0; scroll-behavior: smooth; }}
                 .header {{ text-align: center; margin-bottom: 40px; background: #2F3542; color: white; padding: 25px; border-radius: 12px; }}
                 
-                /* 💡 상단 세로형 요약 대시보드 CSS */
                 .dashboard {{ display: flex; flex-direction: column; gap: 12px; margin-bottom: 50px; max-width: 800px; margin-left: auto; margin-right: auto; }}
                 .dash-card {{ display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, #3742fa 0%, #5352ed 100%); color: white; padding: 15px 25px; border-radius: 10px; text-decoration: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.3s; }}
                 .dash-card:hover {{ transform: translateY(-3px); box-shadow: 0 8px 15px rgba(0,0,0,0.2); filter: brightness(1.1); }}
@@ -484,7 +494,6 @@ jobs:
                 .card .info {{ padding: 15px; font-size: 13px; word-break: break-all; text-align: center; }}
                 .card .info .main-link {{ color: #1e90ff; text-decoration: none; font-weight: 600; display: block; margin-bottom: 8px; }}
                 
-                /* 전체 화면 모달(팝업) CSS */
                 .modal {{ display: none; position: fixed; z-index: 9999; padding-top: 50px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.95); }}
                 .modal-content {{ margin: auto; display: block; max-width: 90%; max-height: 80vh; object-fit: contain; border-radius: 5px; }}
                 #caption {{ margin: auto; display: block; width: 80%; max-width: 700px; text-align: center; color: #fff; padding: 15px 0; font-size: 16px; word-break: break-all; }}
@@ -492,13 +501,11 @@ jobs:
                 .close-btn {{ position: absolute; top: 15px; right: 25px; color: #f1f1f1; font-size: 40px; font-weight: bold; transition: 0.3s; cursor: pointer; }}
                 .close-btn:hover, .close-btn:focus {{ color: #bbb; text-decoration: none; cursor: pointer; }}
                 
-                /* 화살표 버튼 CSS */
                 .modal-nav {{ cursor: pointer; position: absolute; top: 50%; width: auto; padding: 16px; margin-top: -50px; color: white; font-weight: bold; font-size: 30px; transition: 0.3s; user-select: none; border-radius: 5px; text-decoration: none; background-color: rgba(0,0,0,0.5); }}
                 .modal-nav.prev {{ left: 10px; }}
                 .modal-nav.next {{ right: 10px; }}
                 .modal-nav:hover {{ background-color: rgba(255, 255, 255, 0.3); color: #fff; }}
                 
-                /* 모바일 반응형 조정 */
                 @media (max-width: 600px) {{
                     .gallery {{ grid-template-columns: 1fr; }}
                     .modal-nav {{ font-size: 20px; padding: 10px; }}
@@ -513,7 +520,7 @@ jobs:
                 {f'<p style="color:#ffdd59; font-weight:bold;">🧹 중복 이미지 {removed_count}장 제거됨</p>' if removed_count > 0 else ''}
             </div>"""
 
-        # 💡 상단 세로형 요약 대시보드 조립 (도메인 박스 클릭 시 앵커 스크롤 이동)
+        # 상단 세로형 요약 대시보드 조립
         html_content += '<div class="dashboard">'
         for domain in sorted(domain_groups.keys()):
             domain_id = domain.replace(".", "-")
@@ -521,7 +528,6 @@ jobs:
             html_content += f'<a href="#{domain_id}" class="dash-card" title="{domain} 섹션으로 이동"><h3>🌐 {domain}</h3><span>{count}장</span></a>'
         html_content += '</div>'
         
-        # 💡 Base64 데이터가 길어 HTML 태그에 직행하면 깨지므로, JS 배열에 분리 저장합니다.
         js_image_data = []
         js_caption_data = []
         global_img_idx = 0
@@ -531,7 +537,6 @@ jobs:
             html_content += f'<div id="{domain_id}" class="domain-section"><h2 class="domain-title"><span>🌐 {domain}</span><span class="domain-count">총 {len(domain_groups[domain])}개</span></h2><div class="gallery">'
             for img, display_name, base64_src, target_url in domain_groups[domain]:
                 
-                # JS 배열에 데이터 푸시
                 js_image_data.append(base64_src)
                 js_caption_data.append(display_name)
                 
@@ -545,7 +550,6 @@ jobs:
                 global_img_idx += 1
             html_content += "</div></div>"
             
-        # 💡 하단 모달 및 JavaScript 엔진 조립
         html_content += '''
             <!-- 전체 화면 모달(팝업) 영역 -->
             <div id="imageModal" class="modal">
@@ -557,7 +561,6 @@ jobs:
             </div>
 
             <script>
-                // 💡 Python에서 생성된 Base64 이미지 배열과 캡션 배열을 전달받습니다.
                 const imageData = ''' + json.dumps(js_image_data) + ''';
                 const captionData = ''' + json.dumps(js_caption_data) + ''';
                 
@@ -573,7 +576,7 @@ jobs:
 
                 function closeModal() {
                     document.getElementById('imageModal').style.display = 'none';
-                    document.getElementById('fullImage').src = ""; // 메모리 확보
+                    document.getElementById('fullImage').src = ""; 
                 }
                 
                 function changeImage(step) {
@@ -593,14 +596,12 @@ jobs:
                     document.getElementById('caption').innerText = captionData[currentIndex];
                 }
                 
-                // 배경 클릭 시 닫기
                 document.getElementById('imageModal').addEventListener('click', function(e) {
                     if (e.target === this) {
                         closeModal();
                     }
                 });
 
-                // 키보드 네비게이션
                 document.addEventListener('keydown', function(event) {
                     if (document.getElementById('imageModal').style.display === 'block') {
                         if (event.key === "Escape") {
