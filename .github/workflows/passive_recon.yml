@@ -2,9 +2,9 @@ name: Automated Parallel Passive Reconnaissance (Scatter-Gather Engine)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 19 * * *'
-    - cron: '17 7 * * *'
+  #schedule:
+    #- cron: '17 19 * * *'
+    #- cron: '17 7 * * *'
 
 permissions:
   contents: write
